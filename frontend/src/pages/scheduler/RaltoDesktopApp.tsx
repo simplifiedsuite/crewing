@@ -3820,8 +3820,19 @@ export function RaltoDesktopApp() {
     setActive('jobs')
   }
 
+  // The app shell used to be a fixed 1240x800 "card" floating on a grey
+  // backdrop (a leftover from when this screen was first mocked up), which
+  // left most of the browser viewport unused and made Crewing feel
+  // noticeably more cramped than Equiptra's own full-viewport layout — see
+  // Ric's suite-consistency feedback. It's now a real full-viewport shell:
+  // height: 100vh (not minHeight) so Sidebar stays pinned and each
+  // *Content screen's own flex: 1 + overflowY: 'auto' keeps scrolling
+  // internally exactly as before, just filling the real window instead of
+  // a fixed box. No per-screen layout logic changed — every screen already
+  // sized itself with flex: 1 rather than a fixed pixel width, so they
+  // reflow into the extra space on their own.
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 0', background: '#E7E5E1' }}>
+    <div style={{ height: '100vh', overflow: 'hidden', background: 'var(--surface)', display: 'flex' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         :root {
@@ -3848,41 +3859,39 @@ export function RaltoDesktopApp() {
         input::placeholder { color: var(--ink-muted); opacity: 1; }
       `}</style>
 
-      <div style={{ width: 1240, height: 800, background: 'var(--surface)', borderRadius: 16, border: '1px solid var(--line)', boxShadow: '0 30px 60px rgba(23,21,31,0.20)', overflow: 'hidden', display: 'flex' }}>
-        <Sidebar active={active} onSelect={setActive} />
-        {active === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} />}
-        {active === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
-        {active === 'team' && <ResourceCalendarContent people={people} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
-        {active === 'jobs' && (
-          <JobsContent
-            summaries={summaries}
-            clients={clients}
-            venues={venues}
-            venuesList={venuesList}
-            projects={projectsList}
-            roles={rolesList}
-            selectedId={selectedJobId}
-            onSelect={setSelectedJobId}
-            reloadSummaries={reloadSummaries}
-            prefill={jobPrefill}
-            onConsumedPrefill={() => setJobPrefill(undefined)}
-            onOpenRoleInPlanner={openRoleInPlanner}
-          />
-        )}
-        {active === 'planner' && (
-          <PlannerContent
-            summaries={summaries}
-            clients={clients}
-            selectedJobId={selectedPlannerJobId}
-            onSelectJob={setSelectedPlannerJobId}
-            reloadSummaries={reloadSummaries}
-            targetReqId={plannerTargetReqId}
-            onConsumedTarget={() => setPlannerTargetReqId(undefined)}
-          />
-        )}
-        {active === 'crew' && <CrewContent people={people} roles={rolesList} reloadPeople={reloadPeople} />}
-        {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} />}
-      </div>
+      <Sidebar active={active} onSelect={setActive} />
+      {active === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} />}
+      {active === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
+      {active === 'team' && <ResourceCalendarContent people={people} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
+      {active === 'jobs' && (
+        <JobsContent
+          summaries={summaries}
+          clients={clients}
+          venues={venues}
+          venuesList={venuesList}
+          projects={projectsList}
+          roles={rolesList}
+          selectedId={selectedJobId}
+          onSelect={setSelectedJobId}
+          reloadSummaries={reloadSummaries}
+          prefill={jobPrefill}
+          onConsumedPrefill={() => setJobPrefill(undefined)}
+          onOpenRoleInPlanner={openRoleInPlanner}
+        />
+      )}
+      {active === 'planner' && (
+        <PlannerContent
+          summaries={summaries}
+          clients={clients}
+          selectedJobId={selectedPlannerJobId}
+          onSelectJob={setSelectedPlannerJobId}
+          reloadSummaries={reloadSummaries}
+          targetReqId={plannerTargetReqId}
+          onConsumedTarget={() => setPlannerTargetReqId(undefined)}
+        />
+      )}
+      {active === 'crew' && <CrewContent people={people} roles={rolesList} reloadPeople={reloadPeople} />}
+      {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} />}
     </div>
   )
 }
