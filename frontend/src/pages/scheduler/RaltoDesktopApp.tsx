@@ -1851,6 +1851,7 @@ function JobsContent({
   selectedId,
   onSelect,
   reloadSummaries,
+  reloadClients,
   prefill,
   onConsumedPrefill,
   onOpenRoleInPlanner,
@@ -1864,6 +1865,11 @@ function JobsContent({
   selectedId: string | undefined
   onSelect: (id: string) => void
   reloadSummaries: () => void
+  // Fetch-from-Monday's "create new client" path adds a local client mid-
+  // flow that the app's own top-level client list (fetched once) wouldn't
+  // otherwise know about until a full reload — refresh it whenever a Job
+  // create/edit completes, cheap and always safe to call.
+  reloadClients: () => void
   prefill?: JobCreatePrefill
   onConsumedPrefill: () => void
   onOpenRoleInPlanner: (jobId: string, reqId: string) => void
@@ -1934,6 +1940,7 @@ function JobsContent({
     setCreating(false)
     if (prefill) onConsumedPrefill()
     reloadSummaries()
+    reloadClients()
     onSelect(jobId)
   }
 
@@ -1945,6 +1952,7 @@ function JobsContent({
   function finishEditing(jobId: string) {
     setEditing(false)
     reloadSummaries()
+    reloadClients()
     onSelect(jobId)
   }
 
@@ -4183,7 +4191,7 @@ export function RaltoDesktopApp() {
   const [jobPrefill, setJobPrefill] = useState<JobCreatePrefill | undefined>(undefined)
 
   const { summaries, reload: reloadSummaries } = useJobSummaries()
-  const { data: clientsList } = useClients()
+  const { data: clientsList, reload: reloadClients } = useClients()
   const { data: venuesList } = useVenues()
   const { data: projectsList } = useProjects()
   const { data: rolesList, reload: reloadRoles } = useRoles()
@@ -4279,6 +4287,7 @@ export function RaltoDesktopApp() {
           selectedId={selectedJobId}
           onSelect={setSelectedJobId}
           reloadSummaries={reloadSummaries}
+          reloadClients={reloadClients}
           prefill={jobPrefill}
           onConsumedPrefill={() => setJobPrefill(undefined)}
           onOpenRoleInPlanner={openRoleInPlanner}
