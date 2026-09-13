@@ -7,6 +7,8 @@ import type {
   Booking,
   CandidateGroups,
   Client,
+  CoreClient,
+  CoreContract,
   EmploymentType,
   Job,
   JobCommitment,
@@ -129,6 +131,8 @@ export interface CreateJobInput {
   project_id?: string
   venue_id?: string
   project_reference?: string
+  shared_contract_id?: string
+  shared_contract_name?: string
   start_date: string
   end_date: string
   status: JobStatus
@@ -138,6 +142,46 @@ export interface CreateJobInput {
 
 export function createJob(input: CreateJobInput) {
   return api.post<Job>('/jobs', input)
+}
+
+export function updateJob(id: string, input: CreateJobInput) {
+  return api.put<Job>(`/jobs/${id}`, input)
+}
+
+// --- Job "Fetch from Monday", Stage A — everything here proxies through
+// Ralto's own backend to Simplified Suite Core, which owns the Monday.com
+// credential and the real Client/Contract records. See
+// internal/handlers/core_proxy.go and docs/simplified_suite_core_v0_6.md.
+
+export interface MondayProjectLookup {
+  name: string
+  client?: string
+  start_date?: string
+  end_date?: string
+  client_reference?: string
+  delivery_address?: string
+}
+
+export function fetchMondayProjectLookup(orderNumber: string) {
+  return api.get<MondayProjectLookup>(`/monday/project-lookup?order_number=${encodeURIComponent(orderNumber)}`)
+}
+
+export function listCoreClients() {
+  return api.get<CoreClient[]>('/core-clients')
+}
+
+export function createCoreClient(input: { name: string; website?: string | null; brand_color_hex?: string | null }) {
+  return api.post<CoreClient>('/core-clients', input)
+}
+
+// Finds or creates the local Ralto client mirror for a confirmed Core
+// Client — idempotent, see LinkCoreClient's own comment server-side.
+export function linkCoreClient(input: { core_client_id: string; name: string; brand_color_hex?: string | null; website?: string | null }) {
+  return api.post<Client>('/clients/link-core', input)
+}
+
+export function listCoreContracts(clientId: string) {
+  return api.get<CoreContract[]>(`/core-contracts?client_id=${encodeURIComponent(clientId)}`)
 }
 
 export function createJobRequirement(

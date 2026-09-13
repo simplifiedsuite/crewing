@@ -34,8 +34,13 @@ type Client struct {
 	Notes         *string   `json:"notes,omitempty"`
 	BrandColorHex *string   `json:"brand_color_hex,omitempty"`
 	Website       *string   `json:"website,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	// CoreClientID links this row to Core's own Client entity — see
+	// migrations/0009 and docs/simplified_suite_core_v0_6.md §5's mirroring
+	// table. Nil for clients that predate this link or have never been
+	// matched/created via the Job "Fetch from Monday" flow.
+	CoreClientID *string   `json:"core_client_id,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // --- Venue ---
@@ -95,11 +100,20 @@ type Job struct {
 	ProjectReference *string       `json:"project_reference,omitempty"`
 	VenueID          *string       `json:"venue_id,omitempty"`
 	ProjectID        *string       `json:"project_id,omitempty"`
-	StartDate        string        `json:"start_date"`
-	EndDate          string        `json:"end_date"`
-	Status           JobStatus     `json:"status"`
-	Commitment       JobCommitment `json:"commitment"`
-	ColorHex         *string       `json:"color_hex,omitempty"`
+	// SharedContractID is an optional direct link to Core's Contract entity
+	// — see migrations/0009 and docs/simplified_suite_core_v0_6.md §8a. Not
+	// a rename of ProjectID/projects.shared_project_id: Ralto's own
+	// `projects` table is a separate, unrelated concept per that section.
+	// SharedContractName is a cached label from the point this was linked
+	// (or re-linked via the picker) — not live-refreshed, matching the
+	// Monday integration's own "manual fetch, no reconciliation" rule (§5b).
+	SharedContractID   *string       `json:"shared_contract_id,omitempty"`
+	SharedContractName *string       `json:"shared_contract_name,omitempty"`
+	StartDate          string        `json:"start_date"`
+	EndDate            string        `json:"end_date"`
+	Status             JobStatus     `json:"status"`
+	Commitment         JobCommitment `json:"commitment"`
+	ColorHex           *string       `json:"color_hex,omitempty"`
 	Notes            *string       `json:"notes,omitempty"`
 	CreatedBy        *string       `json:"created_by,omitempty"`
 	CreatedAt        time.Time     `json:"created_at"`

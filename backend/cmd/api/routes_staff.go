@@ -26,7 +26,16 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Get("/{id}", api.GetClient)
 			r.Put("/{id}", api.UpdateClient)
 			r.Delete("/{id}", api.DeleteClient)
+			r.Post("/link-core", api.LinkCoreClient)
 		})
+
+		// Job "Fetch from Monday" (Stage A) — all proxy straight to
+		// Simplified Suite Core, which owns the Monday.com credential and
+		// the real Client/Contract records. See internal/handlers/core_proxy.go.
+		r.Get("/monday/project-lookup", api.MondayProjectLookup)
+		r.Get("/core-clients", api.ListCoreClients)
+		r.Post("/core-clients", api.CreateCoreClient)
+		r.Get("/core-contracts", api.ListCoreContracts)
 
 		r.Route("/venues", func(r chi.Router) {
 			r.Get("/", api.ListVenues)

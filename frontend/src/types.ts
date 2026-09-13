@@ -64,8 +64,34 @@ export interface Client {
   notes?: string
   brand_color_hex?: string
   website?: string
+  // core_client_id links this row to Core's own Client entity — set once
+  // this client has been matched/created via a Job "Fetch from Monday"
+  // (see docs/simplified_suite_core_v0_6.md §5). Absent for clients that
+  // predate that link.
+  core_client_id?: string
   created_at: string
   updated_at: string
+}
+
+// The subset of Core's own Client shape Ralto's Monday-fetch flow reads —
+// fetched live from Core (GET /core-clients, proxied), never from Ralto's
+// local mirror, per §5a's "pickers always go live" rule.
+export interface CoreClient {
+  id: string
+  name: string
+  website?: string
+  brand_color_hex?: string
+}
+
+// The subset of Core's own Contract shape the "Link to a Contract?"
+// picker reads — also fetched live (GET /core-contracts?client_id=...).
+export interface CoreContract {
+  id: string
+  client_id: string
+  client_name: string
+  name: string
+  date_start?: string
+  date_end?: string
 }
 
 export interface Venue {
@@ -128,6 +154,13 @@ export interface Job {
   project_reference?: string
   venue_id?: string
   project_id?: string
+  // shared_contract_id is a direct, optional link to Core's Contract —
+  // separate from project_id (Ralto's own, unrelated Project concept, see
+  // Project's own comment above). shared_contract_name is a cached label
+  // from when it was last linked, not live-refreshed — see
+  // docs/simplified_suite_core_v0_6.md §8a/§5b.
+  shared_contract_id?: string
+  shared_contract_name?: string
   start_date: string
   end_date: string
   status: JobStatus

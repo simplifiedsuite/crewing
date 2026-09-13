@@ -52,8 +52,14 @@ import {
   useProjects,
   useRoles,
   createJob,
+  updateJob,
   createJobRequirement,
   createJobContact,
+  fetchMondayProjectLookup,
+  listCoreClients,
+  createCoreClient,
+  linkCoreClient,
+  listCoreContracts,
   indexById,
   resolveAlert,
   offerBooking,
@@ -80,6 +86,7 @@ import {
   deleteRole,
   type JobSummary,
   type PersonWriteInput,
+  type MondayProjectLookup,
 } from '../../lib/hooks'
 import type {
   AlreadyAskedEntry,
@@ -89,6 +96,8 @@ import type {
   Booking,
   BookingStatus,
   Client,
+  CoreClient,
+  CoreContract,
   EmploymentType,
   Job,
   JobCommitment,
@@ -1133,12 +1142,243 @@ interface DraftContact {
   phone: string
 }
 
+const matchInputStyle = { border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px', fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink)', background: '#fff', width: '100%', boxSizing: 'border-box' as const }
+const matchButtonStyle = { border: '1px solid var(--primary-soft)', background: '#fff', color: 'var(--primary-soft)', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer' }
+const matchPrimaryButtonStyle = { border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer' }
+
+// Job "Fetch from Monday", Stage A (Crewing) — client matching is manual,
+// never automatic (see the task's own decision): this panel always shows
+// its result and waits for an explicit confirm/create/pick before ever
+// calling onResolved. Client matching (and everything else here) reads
+// live from Core every time it mounts — see
+// docs/simplified_suite_core_v0_6.md §5a's "pickers always go live" rule —
+// keyed by fetchedName at the call site so a different Monday fetch
+// remounts this with a clean slate rather than reusing stale match state.
+function ClientMatchPanel({ fetchedName, onResolved }: { fetchedName: string; onResolved: (local: Client, core: CoreClient) => void }) {
+  const [status, setStatus] = useState<'loading' | 'matched' | 'no-match' | 'picking' | 'creating' | 'resolved' | 'error'>('loading')
+  const [coreClients, setCoreClients] = useState<CoreClient[]>([])
+  const [matched, setMatched] = useState<CoreClient | undefined>(undefined)
+  const [pickId, setPickId] = useState('')
+  const [newName, setNewName] = useState(fetchedName)
+  const [resolved, setResolved] = useState<Client | undefined>(undefined)
+  const [error, setError] = useState<string | undefined>(undefined)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    listCoreClients()
+      .then((list) => {
+        if (cancelled) return
+        setCoreClients(list)
+        const norm = (s: string) => s.trim().toLowerCase()
+        const found = list.find((c) => norm(c.name) === norm(fetchedName))
+        setMatched(found)
+        setStatus(found ? 'matched' : 'no-match')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setError('Could not reach Simplified Suite Core to check for a matching client — pick or create one manually below, or leave the Client field blank and set it later.')
+        setStatus('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [fetchedName])
+
+  async function confirm(core: CoreClient) {
+    setBusy(true)
+    setError(undefined)
+    try {
+      const local = await linkCoreClient({ core_client_id: core.id, name: core.name, brand_color_hex: core.brand_color_hex, website: core.website })
+      setResolved(local)
+      setStatus('resolved')
+      onResolved(local, core)
+    } catch {
+      setError('Could not link that client — try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function createAndConfirm() {
+    if (!newName.trim()) return
+    setBusy(true)
+    setError(undefined)
+    try {
+      const core = await createCoreClient({ name: newName.trim() })
+      await confirm(core)
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.status === 403
+          ? 'Only an organisation admin can add a new client in Simplified Suite Core — pick an existing one below, or ask your admin to add it.'
+          : 'Could not create that client.',
+      )
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)' }}>Client from Monday: "{fetchedName}"</div>
+
+      {status === 'loading' && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>Checking Simplified Suite for a matching client…</div>}
+
+      {error && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
+
+      {status === 'matched' && matched && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>
+            Matched <strong>{matched.name}</strong> in Simplified Suite.
+          </span>
+          <button onClick={() => confirm(matched)} disabled={busy} style={matchPrimaryButtonStyle}>
+            {busy ? 'Linking…' : 'Use this client'}
+          </button>
+          <button onClick={() => setStatus('picking')} style={matchButtonStyle}>
+            Choose a different client
+          </button>
+        </div>
+      )}
+
+      {status === 'no-match' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No client named "{fetchedName}" found in Simplified Suite.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setStatus('creating')} style={matchPrimaryButtonStyle}>
+              Create new client
+            </button>
+            <button onClick={() => setStatus('picking')} style={matchButtonStyle}>
+              Choose an existing client
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status === 'creating' && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} style={{ ...matchInputStyle, flex: 1 }} />
+          <button onClick={createAndConfirm} disabled={busy || !newName.trim()} style={matchPrimaryButtonStyle}>
+            {busy ? 'Creating…' : 'Create & link'}
+          </button>
+          <button onClick={() => setStatus(matched ? 'matched' : 'no-match')} style={matchButtonStyle}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {status === 'picking' && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select value={pickId} onChange={(e) => setPickId(e.target.value)} style={{ ...matchInputStyle, flex: 1 }}>
+            <option value="">Select a client…</option>
+            {coreClients.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => {
+              const c = coreClients.find((c) => c.id === pickId)
+              if (c) confirm(c)
+            }}
+            disabled={busy || !pickId}
+            style={matchPrimaryButtonStyle}
+          >
+            {busy ? 'Linking…' : 'Use selected'}
+          </button>
+          <button onClick={() => setStatus(matched ? 'matched' : 'no-match')} style={matchButtonStyle}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {status === 'resolved' && resolved && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Check size={14} color="var(--success)" />
+          <span style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>
+            Client confirmed: <strong>{resolved.name}</strong>
+          </span>
+          <button onClick={() => setStatus(matched ? 'matched' : 'no-match')} style={matchButtonStyle}>
+            Change
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The optional "Link to a Contract?" step (Job Fetch-from-Monday, Stage A
+// §4) — always skippable, scoped to whichever Client the Job resolves to.
+// Live from Core every time coreClientId changes, per §5a.
+function ContractPicker({
+  coreClientId,
+  value,
+  onChange,
+}: {
+  coreClientId: string
+  value?: { id: string; name: string }
+  onChange: (contract: { id: string; name: string } | undefined) => void
+}) {
+  const [contracts, setContracts] = useState<CoreContract[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(undefined)
+    listCoreContracts(coreClientId)
+      .then((list) => {
+        if (!cancelled) {
+          setContracts(list)
+          setLoading(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError('Could not load contracts from Simplified Suite Core.')
+          setLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [coreClientId])
+
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }}>
+      Link to a Contract? (optional)
+      {loading ? (
+        <div style={{ fontSize: 12.5, color: 'var(--ink-muted)' }}>Loading this client's contracts…</div>
+      ) : error ? (
+        <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>
+      ) : (
+        <select
+          value={value?.id ?? ''}
+          onChange={(e) => {
+            const c = contracts.find((c) => c.id === e.target.value)
+            onChange(c ? { id: c.id, name: c.name } : undefined)
+          }}
+          style={matchInputStyle}
+        >
+          <option value="">No contract — standalone job</option>
+          {contracts.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      )}
+    </label>
+  )
+}
+
 function JobCreateForm({
   clients,
   projects,
   venues,
   roles,
   prefill,
+  editingJob,
   onCancel,
   onCreated,
 }: {
@@ -1147,24 +1387,86 @@ function JobCreateForm({
   venues: Venue[]
   roles: Role[]
   prefill?: JobCreatePrefill
+  // When set, the form edits this Job instead of creating a new one — see
+  // Job Fetch-from-Monday Stage A's requirement 5 ("reusable... not just at
+  // creation"). Deliberately scoped to the Job's own core fields
+  // (name/client/dates/reference/contract link): requirements and
+  // production contacts stay create-only here, unrelated to this task and
+  // already manageable from Planner/the job detail view.
+  editingJob?: Job
   onCancel: () => void
   onCreated: (jobId: string) => void
 }) {
-  const [name, setName] = useState(prefill?.name ?? '')
-  const [clientId, setClientId] = useState(prefill?.client_id ?? '')
-  const [projectId, setProjectId] = useState('')
-  const [venueId, setVenueId] = useState('')
-  const [startDate, setStartDate] = useState(prefill?.start_date ?? todayISO())
-  const [endDate, setEndDate] = useState(prefill?.end_date ?? prefill?.start_date ?? todayISO())
+  const [name, setName] = useState(editingJob?.name ?? prefill?.name ?? '')
+  const [clientId, setClientId] = useState(editingJob?.client_id ?? prefill?.client_id ?? '')
+  const [projectId, setProjectId] = useState(editingJob?.project_id ?? '')
+  const [venueId, setVenueId] = useState(editingJob?.venue_id ?? '')
+  const [projectReference, setProjectReference] = useState(editingJob?.project_reference ?? '')
+  const [startDate, setStartDate] = useState(editingJob?.start_date ?? prefill?.start_date ?? todayISO())
+  const [endDate, setEndDate] = useState(editingJob?.end_date ?? prefill?.end_date ?? prefill?.start_date ?? todayISO())
   // Converting a ProspectiveEvent defaults to Pencil — addendum v2 §4's
   // one exception to Job.commitment's usual Firm default.
-  const [commitment, setCommitment] = useState<JobCommitment>(prefill?.fromProspectiveEventId ? 'pencil' : 'firm')
-  const [notes, setNotes] = useState('')
+  const [commitment, setCommitment] = useState<JobCommitment>(editingJob?.commitment ?? (prefill?.fromProspectiveEventId ? 'pencil' : 'firm'))
+  const [notes, setNotes] = useState(editingJob?.notes ?? '')
   const [requirements, setRequirements] = useState<DraftRequirement[]>([])
   const [contacts, setContacts] = useState<DraftContact[]>([])
   const [nextKey, setNextKey] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
+
+  // --- Job "Fetch from Monday", Stage A ---
+  const [orderNumber, setOrderNumber] = useState('')
+  const [mondayFetching, setMondayFetching] = useState(false)
+  const [mondayError, setMondayError] = useState<string | undefined>(undefined)
+  const [mondayResult, setMondayResult] = useState<MondayProjectLookup | undefined>(undefined)
+  const [matchedLocalClient, setMatchedLocalClient] = useState<Client | undefined>(undefined)
+  const [matchedCoreClientId, setMatchedCoreClientId] = useState<string | undefined>(undefined)
+  const [sharedContractId, setSharedContractId] = useState(editingJob?.shared_contract_id)
+  const [sharedContractName, setSharedContractName] = useState(editingJob?.shared_contract_name)
+
+  async function fetchFromMonday() {
+    if (!orderNumber.trim()) {
+      setMondayError('Enter an order number first.')
+      return
+    }
+    setMondayFetching(true)
+    setMondayError(undefined)
+    try {
+      const result = await fetchMondayProjectLookup(orderNumber.trim())
+      setMondayResult(result)
+      setName(result.name)
+      if (result.start_date) setStartDate(result.start_date)
+      if (result.end_date) setEndDate(result.end_date)
+      if (result.client_reference) setProjectReference(result.client_reference)
+      // A fresh fetch always needs a fresh match — clear whatever a
+      // previous fetch (or the existing Job, in edit mode) had resolved,
+      // never silently keep an old Client/Contract link against new data.
+      setMatchedLocalClient(undefined)
+      setMatchedCoreClientId(undefined)
+      setSharedContractId(undefined)
+      setSharedContractName(undefined)
+    } catch (err) {
+      setMondayError(err instanceof ApiError ? err.message : 'Could not reach Monday — enter project details manually.')
+      setMondayResult(undefined)
+    } finally {
+      setMondayFetching(false)
+    }
+  }
+
+  // Client options for the plain dropdown below always include whichever
+  // client the Monday-match flow just resolved, even if it was only just
+  // created and isn't in the parent's (possibly stale) `clients` list yet.
+  const clientOptions = useMemo(() => {
+    if (!matchedLocalClient || clients.some((c) => c.id === matchedLocalClient.id)) return clients
+    return [...clients, matchedLocalClient]
+  }, [clients, matchedLocalClient])
+
+  // The Contract picker is scoped to whichever Core Client the Job
+  // actually resolves to — a fresh Monday match, or (editing an existing
+  // Job, or picking manually) whichever client is already selected, if
+  // that client itself has a Core link from a previous match.
+  const selectedClient = clientOptions.find((c) => c.id === clientId)
+  const coreClientIdForContracts = matchedCoreClientId ?? selectedClient?.core_client_id
 
   const inputStyle = { border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px', fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink)', background: '#fff', width: '100%', boxSizing: 'border-box' as const }
   const labelStyle = { display: 'flex', flexDirection: 'column' as const, gap: 4, fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }
@@ -1216,17 +1518,28 @@ function JobCreateForm({
 
     setSaving(true)
     try {
-      const job = await createJob({
+      const payload = {
         name,
         client_id: clientId,
         project_id: projectId || undefined,
         venue_id: venueId || undefined,
+        project_reference: projectReference || undefined,
+        shared_contract_id: sharedContractId,
+        shared_contract_name: sharedContractId ? sharedContractName : undefined,
         start_date: startDate,
         end_date: endDate,
-        status: 'draft',
+        status: editingJob?.status ?? ('draft' as const),
         commitment,
         notes: notes || undefined,
-      })
+      }
+
+      if (editingJob) {
+        const job = await updateJob(editingJob.id, payload)
+        onCreated(job.id)
+        return
+      }
+
+      const job = await createJob(payload)
       await Promise.all(
         requirements.map((r) =>
           createJobRequirement(job.id, {
@@ -1252,7 +1565,7 @@ function JobCreateForm({
       }
       onCreated(job.id)
     } catch {
-      setError('Could not create that job — check the fields and try again.')
+      setError(`Could not ${editingJob ? 'save' : 'create'} that job — check the fields and try again.`)
       setSaving(false)
     }
   }
@@ -1260,7 +1573,7 @@ function JobCreateForm({
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 22, color: 'var(--ink)' }}>New job</div>
+        <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 22, color: 'var(--ink)' }}>{editingJob ? 'Edit job' : 'New job'}</div>
       </div>
       {prefill?.fromProspectiveEventId && (
         <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--primary-soft)', fontStyle: 'italic', marginBottom: 16 }}>
@@ -1269,6 +1582,43 @@ function JobCreateForm({
       )}
 
       <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 14, marginTop: prefill?.fromProspectiveEventId ? 0 : 16 }}>
+        <div style={{ border: '1px dashed var(--primary-soft)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)' }}>Fetch from Monday</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={orderNumber}
+              onChange={(e) => setOrderNumber(e.target.value)}
+              placeholder="Order number, e.g. 5376-06"
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <button onClick={fetchFromMonday} disabled={mondayFetching} style={{ ...matchPrimaryButtonStyle, whiteSpace: 'nowrap', opacity: mondayFetching ? 0.7 : 1 }}>
+              <RefreshCw size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
+              {mondayFetching ? 'Fetching…' : 'Fetch from Monday'}
+            </button>
+          </div>
+          {mondayError && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)' }}>{mondayError}</div>}
+          {mondayResult && (
+            <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)' }}>
+              Applied name{mondayResult.start_date ? ', dates' : ''}{mondayResult.client_reference ? ', reference' : ''} from Monday.
+              {mondayResult.delivery_address && (
+                <div style={{ marginTop: 4 }}>Delivery address (from Monday, not saved on this job): {mondayResult.delivery_address}</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {mondayResult?.client && (
+          <ClientMatchPanel
+            key={mondayResult.client}
+            fetchedName={mondayResult.client}
+            onResolved={(local, core) => {
+              setMatchedLocalClient(local)
+              setClientId(local.id)
+              setMatchedCoreClientId(core.id)
+            }}
+          />
+        )}
+
         <label style={labelStyle}>
           Job name
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. UFC 327 — Las Vegas" style={inputStyle} />
@@ -1279,7 +1629,7 @@ function JobCreateForm({
             Client
             <select value={clientId} onChange={(e) => setClientId(e.target.value)} style={inputStyle}>
               <option value="">Select a client…</option>
-              {clients.map((c) => (
+              {clientOptions.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
@@ -1322,6 +1672,23 @@ function JobCreateForm({
         </div>
 
         <label style={labelStyle}>
+          Reference (optional)
+          <input value={projectReference} onChange={(e) => setProjectReference(e.target.value)} placeholder="e.g. their PO / job number" style={inputStyle} />
+        </label>
+
+        {coreClientIdForContracts && (
+          <ContractPicker
+            key={coreClientIdForContracts}
+            coreClientId={coreClientIdForContracts}
+            value={sharedContractId ? { id: sharedContractId, name: sharedContractName ?? '' } : undefined}
+            onChange={(c) => {
+              setSharedContractId(c?.id)
+              setSharedContractName(c?.name)
+            }}
+          />
+        )}
+
+        <label style={labelStyle}>
           Commitment
           <div style={{ display: 'flex', gap: 8 }}>
             {(['firm', 'pencil'] as const).map((c) => (
@@ -1354,6 +1721,13 @@ function JobCreateForm({
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font)' }} />
         </label>
 
+        {editingJob && (
+          <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', fontStyle: 'italic' }}>
+            Roles and production contacts aren't editable here — manage them from Planner or the job detail view.
+          </div>
+        )}
+
+        {!editingJob && (
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13, color: 'var(--ink)' }}>Roles</span>
@@ -1444,6 +1818,7 @@ function JobCreateForm({
             ))}
           </div>
         </div>
+        )}
 
         {error && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--danger)' }}>{error}</div>}
 
@@ -1456,7 +1831,7 @@ function JobCreateForm({
             disabled={saving}
             style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '9px 18px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}
           >
-            {saving ? 'Creating…' : 'Create job'}
+            {saving ? (editingJob ? 'Saving…' : 'Creating…') : editingJob ? 'Save changes' : 'Create job'}
           </button>
         </div>
       </div>
@@ -1494,6 +1869,7 @@ function JobsContent({
   const [query, setQuery] = useState('')
   const [contacts, setContacts] = useState<JobContact[]>([])
   const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState(false)
   const [bookingsByReq, setBookingsByReq] = useState<Record<string, Booking[]>>({})
   const [confirmEveryoneState, setConfirmEveryoneState] = useState<'idle' | 'confirming' | 'busy'>('idle')
 
@@ -1564,8 +1940,28 @@ function JobsContent({
     if (prefill) onConsumedPrefill()
   }
 
+  function finishEditing(jobId: string) {
+    setEditing(false)
+    reloadSummaries()
+    onSelect(jobId)
+  }
+
   if (creating) {
     return <JobCreateForm clients={Object.values(clients)} projects={projects} venues={venuesList} roles={roles} prefill={prefill} onCancel={cancelCreating} onCreated={finishCreating} />
+  }
+
+  if (editing && selected) {
+    return (
+      <JobCreateForm
+        clients={Object.values(clients)}
+        projects={projects}
+        venues={venuesList}
+        roles={roles}
+        editingJob={selected.job}
+        onCancel={() => setEditing(false)}
+        onCreated={finishEditing}
+      />
+    )
   }
 
   if (!selected) {
@@ -1623,6 +2019,13 @@ function JobsContent({
               "confirmed"/"crewing"/etc. verbatim via urgencyFor's tier color,
               which is why testers saw "Confirmed" in several colours). */}
           <CommitmentBadge job={selected.job} />
+          <button
+            onClick={() => setEditing(true)}
+            title="Edit job"
+            style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+          >
+            <Pencil size={11} /> Edit
+          </button>
           {pendingBookings.length > 0 && confirmEveryoneState === 'idle' && (
             <button
               onClick={() => setConfirmEveryoneState('confirming')}

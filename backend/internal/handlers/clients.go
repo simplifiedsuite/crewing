@@ -10,10 +10,15 @@ import (
 	"ralto/internal/models"
 )
 
+const clientSelectColumns = `id, name, contact_name, contact_email, contact_phone, notes, brand_color_hex, website, core_client_id, created_at, updated_at`
+
+func scanClient(row pgx.Row, c *models.Client) error {
+	return row.Scan(&c.ID, &c.Name, &c.ContactName, &c.ContactEmail, &c.ContactPhone, &c.Notes, &c.BrandColorHex, &c.Website, &c.CoreClientID, &c.CreatedAt, &c.UpdatedAt)
+}
+
 func (a *API) ListClients(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.DB.Query(r.Context(),
-		`SELECT id, name, contact_name, contact_email, contact_phone, notes, brand_color_hex, website, created_at, updated_at
-		 FROM clients WHERE organisation_id = $1 ORDER BY name`, currentOrgID)
+		`SELECT `+clientSelectColumns+` FROM clients WHERE organisation_id = $1 ORDER BY name`, currentOrgID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list clients")
 		return
@@ -23,7 +28,7 @@ func (a *API) ListClients(w http.ResponseWriter, r *http.Request) {
 	clients := []models.Client{}
 	for rows.Next() {
 		var c models.Client
-		if err := rows.Scan(&c.ID, &c.Name, &c.ContactName, &c.ContactEmail, &c.ContactPhone, &c.Notes, &c.BrandColorHex, &c.Website, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := scanClient(rows, &c); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list clients")
 			return
 		}
@@ -35,10 +40,9 @@ func (a *API) ListClients(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetClient(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var c models.Client
-	err := a.DB.QueryRow(r.Context(),
-		`SELECT id, name, contact_name, contact_email, contact_phone, notes, brand_color_hex, website, created_at, updated_at
-		 FROM clients WHERE id = $1 AND organisation_id = $2`, id, currentOrgID,
-	).Scan(&c.ID, &c.Name, &c.ContactName, &c.ContactEmail, &c.ContactPhone, &c.Notes, &c.BrandColorHex, &c.Website, &c.CreatedAt, &c.UpdatedAt)
+	err := scanClient(a.DB.QueryRow(r.Context(),
+		`SELECT `+clientSelectColumns+` FROM clients WHERE id = $1 AND organisation_id = $2`, id, currentOrgID,
+	), &c)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "client not found")
 		return
@@ -67,12 +71,12 @@ func (a *API) CreateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var c models.Client
-	err := a.DB.QueryRow(r.Context(),
+	err := scanClient(a.DB.QueryRow(r.Context(),
 		`INSERT INTO clients (name, contact_name, contact_email, contact_phone, notes, brand_color_hex, website, organisation_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING id, name, contact_name, contact_email, contact_phone, notes, brand_color_hex, website, created_at, updated_at`,
+		 RETURNING `+clientSelectColumns,
 		req.Name, req.ContactName, req.ContactEmail, req.ContactPhone, req.Notes, req.BrandColorHex, req.Website, currentOrgID,
-	).Scan(&c.ID, &c.Name, &c.ContactName, &c.ContactEmail, &c.ContactPhone, &c.Notes, &c.BrandColorHex, &c.Website, &c.CreatedAt, &c.UpdatedAt)
+	), &c)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create client")
 		return
@@ -88,13 +92,13 @@ func (a *API) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var c models.Client
-	err := a.DB.QueryRow(r.Context(),
+	err := scanClient(a.DB.QueryRow(r.Context(),
 		`UPDATE clients SET name = $1, contact_name = $2, contact_email = $3, contact_phone = $4,
 		        notes = $5, brand_color_hex = $6, website = $7, updated_at = now()
 		 WHERE id = $8 AND organisation_id = $9
-		 RETURNING id, name, contact_name, contact_email, contact_phone, notes, brand_color_hex, website, created_at, updated_at`,
+		 RETURNING `+clientSelectColumns,
 		req.Name, req.ContactName, req.ContactEmail, req.ContactPhone, req.Notes, req.BrandColorHex, req.Website, id, currentOrgID,
-	).Scan(&c.ID, &c.Name, &c.ContactName, &c.ContactEmail, &c.ContactPhone, &c.Notes, &c.BrandColorHex, &c.Website, &c.CreatedAt, &c.UpdatedAt)
+	), &c)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "client not found")
 		return
@@ -118,4 +122,57 @@ func (a *API) DeleteClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+type linkCoreClientRequest struct {
+	CoreClientID  string  `json:"core_client_id"`
+	Name          string  `json:"name"`
+	BrandColorHex *string `json:"brand_color_hex"`
+	Website       *string `json:"website"`
+}
+
+// LinkCoreClient is the "confirm" step of Job creation's Client match:
+// once a person has confirmed which Core Client a fetched name resolves
+// to (whether pre-existing in Core or just created there), this finds or
+// creates the local Ralto mirror row jobs.client_id actually needs — see
+// docs/simplified_suite_core_v0_6.md §5's mirroring table (core_client_id
+// + mirrored name/brand colour) and migrations/0009. Idempotent: calling
+// this again for a core_client_id already mirrored just returns the
+// existing local row unchanged, it never creates a duplicate.
+func (a *API) LinkCoreClient(w http.ResponseWriter, r *http.Request) {
+	var req linkCoreClientRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.CoreClientID == "" || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "core_client_id and name are required")
+		return
+	}
+
+	var c models.Client
+	err := scanClient(a.DB.QueryRow(r.Context(),
+		`SELECT `+clientSelectColumns+` FROM clients WHERE core_client_id = $1 AND organisation_id = $2`,
+		req.CoreClientID, currentOrgID,
+	), &c)
+	if err == nil {
+		writeJSON(w, http.StatusOK, c)
+		return
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to look up client")
+		return
+	}
+
+	err = scanClient(a.DB.QueryRow(r.Context(),
+		`INSERT INTO clients (name, brand_color_hex, website, core_client_id, organisation_id)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING `+clientSelectColumns,
+		req.Name, req.BrandColorHex, req.Website, req.CoreClientID, currentOrgID,
+	), &c)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create local client mirror")
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
 }
