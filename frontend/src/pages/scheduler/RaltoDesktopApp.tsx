@@ -1728,6 +1728,7 @@ function JobCreateForm({
         )}
 
         {!editingJob && (
+        <>
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13, color: 'var(--ink)' }}>Roles</span>
@@ -1818,6 +1819,7 @@ function JobCreateForm({
             ))}
           </div>
         </div>
+        </>
         )}
 
         {error && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--danger)' }}>{error}</div>}
