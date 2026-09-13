@@ -109,6 +109,12 @@ type Job struct {
 	// Monday integration's own "manual fetch, no reconciliation" rule (§5b).
 	SharedContractID   *string       `json:"shared_contract_id,omitempty"`
 	SharedContractName *string       `json:"shared_contract_name,omitempty"`
+	// SharedJobID links this Job to Core's own shared Job entity — set
+	// when this Job was created from a Monday fetch, whether that fetch
+	// found an existing Core Job (created earlier, by either product) or
+	// created a new one. See migrations/0010 and Core's own
+	// migrations/0008_jobs.sql.
+	SharedJobID *string `json:"shared_job_id,omitempty"`
 	StartDate          string        `json:"start_date"`
 	EndDate            string        `json:"end_date"`
 	Status             JobStatus     `json:"status"`

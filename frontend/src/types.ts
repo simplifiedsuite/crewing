@@ -94,6 +94,23 @@ export interface CoreContract {
   date_end?: string
 }
 
+// Core's own shared Job entity — one Monday order-number fetch, visible
+// from every product (see Core's migrations/0008_jobs.sql). client_name/
+// contract_name are joined in for display — see GetCoreJobByOrderNumber.
+export interface CoreJob {
+  id: string
+  order_number: string
+  name: string
+  client_id: string
+  client_name: string
+  contract_id?: string
+  contract_name?: string
+  date_start?: string
+  date_end?: string
+  client_reference?: string
+  delivery_address?: string
+}
+
 export interface Venue {
   id: string
   name: string
@@ -161,6 +178,11 @@ export interface Job {
   // docs/simplified_suite_core_v0_6.md §8a/§5b.
   shared_contract_id?: string
   shared_contract_name?: string
+  // shared_job_id links this Job to Core's own shared Job entity — set
+  // when created from a Monday fetch, whether that fetch found an
+  // existing Core Job or created a new one. See Core's
+  // migrations/0008_jobs.sql.
+  shared_job_id?: string
   start_date: string
   end_date: string
   status: JobStatus

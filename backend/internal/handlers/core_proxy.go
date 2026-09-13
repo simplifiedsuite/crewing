@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"ralto/internal/middleware"
 )
 
@@ -110,4 +112,36 @@ func (a *API) ListCoreContracts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.proxyToCore(w, r, "/api/contracts?client_id="+url.QueryEscape(clientID))
+}
+
+// GetCoreJobByOrderNumber is the "check Core first" step of the shared Job
+// entity (see Core's own migrations/0008_jobs.sql): an order number is a
+// real, exact, unique identifier — unlike Client name, so this is a
+// straight lookup, no matching/confirmation involved. 404 means no
+// product has fetched this order number before; fall through to the
+// existing Monday-fetch + Client match/Contract-picker flow, unchanged.
+func (a *API) GetCoreJobByOrderNumber(w http.ResponseWriter, r *http.Request) {
+	orderNumber := strings.TrimSpace(r.URL.Query().Get("order_number"))
+	if orderNumber == "" {
+		writeError(w, http.StatusBadRequest, "order_number is required")
+		return
+	}
+	a.proxyToCore(w, r, "/api/jobs?order_number="+url.QueryEscape(orderNumber))
+}
+
+// CreateCoreJob persists a shared Job once this product has already run
+// the existing Client match/confirm (and optional Contract picker) flow —
+// called only on the "Core doesn't have this order number yet" path, right
+// before creating the local Job, so the next fetch (from either product)
+// finds it immediately.
+func (a *API) CreateCoreJob(w http.ResponseWriter, r *http.Request) {
+	a.proxyToCore(w, r, "/api/jobs")
+}
+
+// RefreshCoreJob is the explicit "re-check Monday" action on an already-
+// found shared Job — the everyday fetch path never calls Monday at all
+// once Core already has the order number; only this does.
+func (a *API) RefreshCoreJob(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	a.proxyToCore(w, r, "/api/jobs/"+url.PathEscape(id)+"/refresh")
 }

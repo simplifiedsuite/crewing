@@ -10,11 +10,11 @@ import (
 	"ralto/internal/models"
 )
 
-const jobSelectColumns = `id, name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name,
+const jobSelectColumns = `id, name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id,
 	        start_date, end_date, status, commitment, color_hex, notes, created_by, created_at, updated_at`
 
 func scanJob(row pgx.Row, j *models.Job) error {
-	return row.Scan(&j.ID, &j.Name, &j.ClientID, &j.ProjectReference, &j.VenueID, &j.ProjectID, &j.SharedContractID, &j.SharedContractName,
+	return row.Scan(&j.ID, &j.Name, &j.ClientID, &j.ProjectReference, &j.VenueID, &j.ProjectID, &j.SharedContractID, &j.SharedContractName, &j.SharedJobID,
 		&j.StartDate, &j.EndDate, &j.Status, &j.Commitment, &j.ColorHex, &j.Notes, &j.CreatedBy, &j.CreatedAt, &j.UpdatedAt)
 }
 
@@ -66,6 +66,7 @@ type jobWriteRequest struct {
 	ProjectID          *string              `json:"project_id"`
 	SharedContractID   *string              `json:"shared_contract_id"`
 	SharedContractName *string              `json:"shared_contract_name"`
+	SharedJobID        *string              `json:"shared_job_id"`
 	StartDate          string               `json:"start_date"`
 	EndDate            string               `json:"end_date"`
 	Status             models.JobStatus     `json:"status"`
@@ -93,10 +94,10 @@ func (a *API) CreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	var j models.Job
 	err := scanJob(a.DB.QueryRow(r.Context(),
-		`INSERT INTO jobs (name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, start_date, end_date, status, commitment, color_hex, notes, created_by, organisation_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		`INSERT INTO jobs (name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, start_date, end_date, status, commitment, color_hex, notes, created_by, organisation_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		 RETURNING `+jobSelectColumns,
-		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, staff, currentOrgID,
+		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, staff, currentOrgID,
 	), &j)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create job")
@@ -115,11 +116,11 @@ func (a *API) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	var j models.Job
 	err := scanJob(a.DB.QueryRow(r.Context(),
 		`UPDATE jobs SET name = $1, client_id = $2, project_reference = $3, venue_id = $4, project_id = $5,
-		        shared_contract_id = $6, shared_contract_name = $7,
-		        start_date = $8, end_date = $9, status = $10, commitment = $11, color_hex = $12, notes = $13, updated_at = now()
-		 WHERE id = $14 AND organisation_id = $15
+		        shared_contract_id = $6, shared_contract_name = $7, shared_job_id = $8,
+		        start_date = $9, end_date = $10, status = $11, commitment = $12, color_hex = $13, notes = $14, updated_at = now()
+		 WHERE id = $15 AND organisation_id = $16
 		 RETURNING `+jobSelectColumns,
-		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, id, currentOrgID,
+		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, id, currentOrgID,
 	), &j)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "job not found")

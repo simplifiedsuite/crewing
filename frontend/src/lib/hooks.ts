@@ -9,6 +9,7 @@ import type {
   Client,
   CoreClient,
   CoreContract,
+  CoreJob,
   EmploymentType,
   Job,
   JobCommitment,
@@ -133,6 +134,7 @@ export interface CreateJobInput {
   project_reference?: string
   shared_contract_id?: string
   shared_contract_name?: string
+  shared_job_id?: string
   start_date: string
   end_date: string
   status: JobStatus
@@ -182,6 +184,35 @@ export function linkCoreClient(input: { core_client_id: string; name: string; br
 
 export function listCoreContracts(clientId: string) {
   return api.get<CoreContract[]>(`/core-contracts?client_id=${encodeURIComponent(clientId)}`)
+}
+
+// --- Shared Core Job entity — one Monday fetch, visible from every
+// product. See Core's own migrations/0008_jobs.sql.
+
+export function getCoreJobByOrderNumber(orderNumber: string) {
+  return api.get<CoreJob>(`/core-jobs?order_number=${encodeURIComponent(orderNumber)}`)
+}
+
+export function createCoreJob(input: {
+  order_number: string
+  name: string
+  client_id: string
+  contract_id?: string
+  date_start?: string
+  date_end?: string
+  client_reference?: string
+  delivery_address?: string
+}) {
+  return api.post<CoreJob>('/core-jobs', input)
+}
+
+// The explicit "re-check Monday" action — the everyday fetch path never
+// calls Monday at all once Core already has this order number; only this
+// does. Refreshes name/dates/client_reference/delivery_address only —
+// client_id/contract_id are left untouched server-side (see
+// RefreshJobFromMonday's own comment).
+export function refreshCoreJob(id: string) {
+  return api.post<CoreJob>(`/core-jobs/${id}/refresh`)
 }
 
 export function createJobRequirement(
