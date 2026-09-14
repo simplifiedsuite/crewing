@@ -3431,11 +3431,22 @@ const CREW_FILTERS = [
 // which includes a secondary skill, not only someone's main discipline.
 // A person can therefore match more than one discipline button at once;
 // that's intentional (unlike primary_role_category's on-card label, which
-// still shows exactly one). Sound/Production/VT existing as real roles
-// with real people holding them, but almost never as anyone's *primary*
-// role, is exactly why they were invisible under the old primary-only
-// count — confirmed against live data before making this change.
-const MIN_DISCIPLINE_COUNT = 2
+// still shows exactly one).
+//
+// Sound/Production/VT missing turned out to be two separate things, not
+// one bug: (1) the old primary-only count under-counted real people (e.g.
+// someone whose primary role is Vision but who also holds a Technical
+// role couldn't be found under Technical at all) — fixed by counting
+// role_categories above; but also (2), checked against live data, Sound
+// and Production currently have exactly ONE real person each, and VT has
+// none at all — even fixed, that's below what MIN_DISCIPLINE_COUNT was
+// set to (2). Lowered to 1 as the reasonable call: a role that's real and
+// that someone genuinely holds should be findable even if only one person
+// has it today, and the original ">=2" was about hiding noise (a typo, a
+// one-off), not legitimate categories with thin current headcount. This
+// still can't make a truly empty category (VT, right now) appear — that
+// needs an actual person holding a VT role, not a filter-logic change.
+const MIN_DISCIPLINE_COUNT = 1
 const OTHER_DISCIPLINE = 'other'
 
 function disciplineBuckets(people: Person[]): { categories: string[]; hasOther: boolean } {
