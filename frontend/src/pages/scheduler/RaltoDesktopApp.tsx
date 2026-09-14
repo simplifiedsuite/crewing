@@ -2469,12 +2469,11 @@ function JobsContent({
               <Check size={11} /> Confirm everyone ({pendingBookings.length})
             </button>
           )}
-          {/* Terminal-status actions — hidden once already in that state,
-              and hidden from each other once one applies (a cancelled job
-              can still be marked complete if that's genuinely wanted, but
-              not the reverse; simplest to just gate each on its own
-              not-already-there check rather than encode a transition
-              graph nobody asked for here). */}
+          {/* Terminal-status actions — both statuses are dead ends once
+              set: a cancelled job can't be re-cancelled or marked
+              complete, and vice versa. No transition graph beyond that,
+              since nobody asked for one — just gate each button on
+              "neither terminal state is already set". */}
           {statusAction === 'idle' && selected.job.status !== 'cancelled' && (
             <button
               onClick={() => setStatusAction('confirming-cancel')}
