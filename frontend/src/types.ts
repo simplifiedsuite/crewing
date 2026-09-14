@@ -34,14 +34,22 @@ export interface Person {
   notes?: string
   phone_number?: string
   notification_channels?: string
+  // The crew member's own personal vehicle registration, for site/parking
+  // access — distinct from a fleet Vehicle (see Vehicle/JobVehicle below).
+  vehicle_registration?: string
   active: boolean
   must_change_password: boolean
   created_at: string
   updated_at: string
-  // Only present on ListPeople's response (the /people list) — the primary
-  // role's category, for Crew's discipline filter. Absent (not just falsy)
-  // on every other endpoint that returns a bare Person.
+  // Only present on ListPeople's response (the /people list). Absent (not
+  // just falsy) on every other endpoint that returns a bare Person.
   primary_role_category?: string
+  // Every distinct category across ALL of this person's roles, not just
+  // primary_role_category — what Crew's discipline filter actually
+  // matches against, so a secondary skill (e.g. Sound on someone whose
+  // primary role is Camera Op) is still filterable. Same
+  // ListPeople-only availability as primary_role_category.
+  role_categories?: string[]
 }
 
 // A Role a Person can be booked into (person_roles) — is_primary marks the
@@ -136,6 +144,17 @@ export interface OvertimeRule {
   multiplier: number
 }
 
+// Company fleet vehicle (e.g. "Transit Van 1") — distinct from
+// Person.vehicle_registration, a crew member's own personal car.
+export interface Vehicle {
+  id: string
+  name: string
+  registration: string
+  notes?: string
+  created_at: string
+  updated_at: string
+}
+
 export type SkillType = 'skill' | 'certification' | 'visa' | 'credential'
 
 export interface Skill {
@@ -183,6 +202,10 @@ export interface Job {
   // existing Core Job or created a new one. See Core's
   // migrations/0008_jobs.sql.
   shared_job_id?: string
+  // The Monday order number this Job was fetched with — cached locally at
+  // fetch/create time, only ever set alongside shared_job_id. See
+  // migrations/0012_job_order_number.sql.
+  order_number?: string
   start_date: string
   end_date: string
   status: JobStatus

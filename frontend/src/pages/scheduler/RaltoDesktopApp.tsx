@@ -32,6 +32,7 @@ import {
   KeyRound,
   Link as LinkIcon,
   Copy,
+  Archive as ArchiveIcon,
 } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { useStaffAuth } from '../../context/StaffAuthContext'
@@ -55,6 +56,8 @@ import {
   useRoles,
   createJob,
   updateJob,
+  updateJobStatus,
+  useCompletedJobsForPerson,
   createJobRequirement,
   createJobContact,
   fetchMondayProjectLookup,
@@ -89,6 +92,13 @@ import {
   createRole,
   updateRole,
   deleteRole,
+  useVehicles,
+  createVehicle,
+  updateVehicle,
+  deleteVehicle,
+  listJobVehicles,
+  assignVehicleToJob,
+  unassignVehicleFromJob,
   type JobSummary,
   type PersonWriteInput,
   type MondayProjectLookup,
@@ -107,6 +117,7 @@ import type {
   EmploymentType,
   Job,
   JobCommitment,
+  JobStatus,
   JobContact,
   JobRequirementWithCounts,
   OperationalAlert,
@@ -122,6 +133,7 @@ import type {
   ScheduleItHistory,
   Skill,
   SkillType,
+  Vehicle,
   Venue,
 } from '../../types'
 
@@ -141,6 +153,10 @@ const NAV_ITEMS = [
   { key: 'jobs', label: 'Jobs', icon: Briefcase },
   { key: 'planner', label: 'Planner', icon: CalendarRange },
   { key: 'crew', label: 'Crew', icon: Users },
+  // Testing feedback item E: Complete jobs live here, separate from the
+  // active Jobs list — its own nav item, not tucked under Settings, since
+  // it's a real working view (with its own crew filter), not reference data.
+  { key: 'archive', label: 'Archive', icon: ArchiveIcon },
 ] as const
 
 type NavKey = (typeof NAV_ITEMS)[number]['key'] | 'settings'
@@ -161,17 +177,25 @@ function formatDate(iso: string): string {
   return `${d}/${m}/${y.slice(2)}`
 }
 
-// The three-tag vocabulary from addendum v2 §4 — derived, never stored.
-// Cancelled beats Pencil beats Booked, and the lifecycle enum underneath
-// (Draft..Complete) is untouched by this — it's a second, orthogonal axis.
-function commitmentTag(job: Job): { label: string; color: string; bg: string } {
+// The four-tag vocabulary from addendum v2 §4, expanded per testing
+// feedback item E: Complete now gets its own tag (it already existed as a
+// real Job.status value but was never surfaced — every non-cancelled job
+// used to fall through to Pencil/Booked regardless). Derived, never
+// stored: Cancelled beats Complete beats commitment. The lifecycle enum
+// underneath (Draft..Live, the "internal progress" states) still never
+// renders here directly — draft/defining/crewing/confirmed/briefed/live
+// all still collapse into Pencilled/Booked exactly as before; only
+// Complete/Cancelled get their own tag, because those are the two states
+// with new dedicated actions and (Complete) a whole separate Archive view.
+function jobStatusTag(job: Job): { label: string; color: string; bg: string } {
   if (job.status === 'cancelled') return { label: 'Cancelled', color: 'var(--danger)', bg: 'var(--danger-bg)' }
-  if (job.commitment === 'pencil') return { label: 'Pencil', color: 'var(--primary-soft)', bg: 'var(--primary-tint)' }
+  if (job.status === 'complete') return { label: 'Complete', color: 'var(--ink-muted)', bg: 'var(--track)' }
+  if (job.commitment === 'pencil') return { label: 'Pencilled', color: 'var(--primary-soft)', bg: 'var(--primary-tint)' }
   return { label: 'Booked', color: 'var(--success)', bg: 'var(--success-bg)' }
 }
 
 function CommitmentBadge({ job }: { job: Job }) {
-  const tag = commitmentTag(job)
+  const tag = jobStatusTag(job)
   return (
     <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 10.5, padding: '2px 8px', borderRadius: 999, color: tag.color, background: tag.bg, whiteSpace: 'nowrap' }}>
       {tag.label}
@@ -1485,7 +1509,7 @@ function JobCreateForm({
   const [error, setError] = useState<string | undefined>(undefined)
 
   // --- Job "Fetch from Monday", Stage A + shared Core Job entity ---
-  const [orderNumber, setOrderNumber] = useState('')
+  const [orderNumber, setOrderNumber] = useState(editingJob?.order_number ?? '')
   const [mondayFetching, setMondayFetching] = useState(false)
   const [mondayError, setMondayError] = useState<string | undefined>(undefined)
   const [mondayResult, setMondayResult] = useState<MondayProjectLookup | undefined>(undefined)
@@ -1675,6 +1699,7 @@ function JobCreateForm({
         shared_contract_id: sharedContractId,
         shared_contract_name: sharedContractId ? sharedContractName : undefined,
         shared_job_id: finalSharedJobId,
+        order_number: finalSharedJobId ? trimmedOrderNumber || undefined : undefined,
         start_date: startDate,
         end_date: endDate,
         status: editingJob?.status ?? ('draft' as const),
@@ -2005,6 +2030,210 @@ function JobCreateForm({
   )
 }
 
+// AddRoleRequirementRow — the "add a role requirement" action JobCreateForm
+// itself points at ("...manage them from Planner or the job detail view")
+// but never actually built here. Deliberately lives on the Job detail
+// panel (JobsContent), not inside JobCreateForm's edit mode — same backend
+// endpoint (createJobRequirement) and the same fields as the create-time
+// version, just scoped to one job already on screen instead of a batch of
+// draft rows.
+function AddRoleRequirementRow({ jobId, jobStartDate, jobEndDate, roles, onAdded }: { jobId: string; jobStartDate: string; jobEndDate: string; roles: Role[]; onAdded: () => void }) {
+  const [adding, setAdding] = useState(false)
+  const [roleId, setRoleId] = useState('')
+  const [quantity, setQuantity] = useState('1')
+  const [startDate, setStartDate] = useState(jobStartDate)
+  const [endDate, setEndDate] = useState(jobEndDate)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  const inputStyle = { border: '1px solid var(--line)', borderRadius: 8, padding: '7px 10px', fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)', background: '#fff' }
+  const labelStyle = { display: 'flex', flexDirection: 'column' as const, gap: 4, fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }
+
+  async function submit() {
+    if (!roleId) {
+      setError('Select a role.')
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      await createJobRequirement(jobId, { role_id: roleId, quantity_required: Number(quantity) || 1, start_date: startDate, end_date: endDate })
+      setAdding(false)
+      setRoleId('')
+      setQuantity('1')
+      setStartDate(jobStartDate)
+      setEndDate(jobEndDate)
+      onAdded()
+    } catch {
+      setError('Could not add that role.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!adding) {
+    return (
+      <button
+        onClick={() => setAdding(true)}
+        style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, border: '1px dashed var(--primary-soft)', background: '#fff', color: 'var(--primary-soft)', borderRadius: 8, padding: '8px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+      >
+        <Plus size={12} /> Add role
+      </button>
+    )
+  }
+
+  return (
+    <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6, border: '1px solid var(--line)', borderRadius: 8, padding: 10 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+        <label style={{ ...labelStyle, flex: 1.4 }}>
+          Role
+          <select value={roleId} onChange={(e) => setRoleId(e.target.value)} style={inputStyle}>
+            <option value="">Select…</option>
+            {roles.map((role) => (
+              <option key={role.id} value={role.id}>
+                {role.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label style={{ ...labelStyle, flex: 0.6 }}>
+          Qty
+          <input type="number" min={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} style={inputStyle} />
+        </label>
+        <label style={{ ...labelStyle, flex: 1 }}>
+          Start
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
+        </label>
+        <label style={{ ...labelStyle, flex: 1 }}>
+          End
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
+        </label>
+        <button onClick={submit} disabled={saving} style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '7px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>
+          {saving ? 'Adding…' : 'Add'}
+        </button>
+        <button onClick={() => setAdding(false)} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '7px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+          Cancel
+        </button>
+      </div>
+      {error && <div style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--danger)' }}>{error}</div>}
+    </div>
+  )
+}
+
+// JobVehiclesSection — testing feedback item G: assigning one or more
+// fleet Vehicles to a Job, shown small/unobtrusive on the Job detail
+// panel per the ask ("doesn't need to be prominent"). Deliberately shown
+// here rather than on every row of the compact left-hand Jobs list, which
+// would need an extra fetch per row just to render a small icon; this is
+// still "the Jobs tab" the feedback asked for.
+function JobVehiclesSection({ jobId, vehiclesList }: { jobId: string; vehiclesList: Vehicle[] }) {
+  const [assigned, setAssigned] = useState<Vehicle[]>([])
+  const [loading, setLoading] = useState(true)
+  const [adding, setAdding] = useState(false)
+  const [pickId, setPickId] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const reload = useCallback(() => {
+    setLoading(true)
+    listJobVehicles(jobId)
+      .then(setAssigned)
+      .finally(() => setLoading(false))
+  }, [jobId])
+
+  useEffect(() => {
+    reload()
+  }, [reload])
+
+  const assignedIds = new Set(assigned.map((v) => v.id))
+  const available = vehiclesList.filter((v) => !assignedIds.has(v.id))
+
+  async function assign() {
+    if (!pickId) return
+    setBusy(true)
+    try {
+      await assignVehicleToJob(jobId, pickId)
+      setPickId('')
+      setAdding(false)
+      reload()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function unassign(vehicleId: string) {
+    setBusy(true)
+    try {
+      await unassignVehicleFromJob(jobId, vehicleId)
+      reload()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (loading) return null
+  // No assigned vehicles and nothing being added: stay fully out of the
+  // way rather than showing an empty-state block for the common case of a
+  // job with no vehicle — the ask was "no broken empty state", and the
+  // quietest correct answer is simply not rendering anything extra.
+  if (!adding && assigned.length === 0) {
+    return (
+      <div style={{ marginTop: 16 }}>
+        <button
+          onClick={() => setAdding(true)}
+          style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'none', color: 'var(--ink-muted)', padding: 0, fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+        >
+          <Plus size={12} /> Assign a vehicle
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink-muted)' }}>Vehicles</span>
+        {!adding && available.length > 0 && (
+          <button onClick={() => setAdding(true)} style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'none', color: 'var(--primary-soft)', padding: 0, fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>
+            <Plus size={12} /> Assign
+          </button>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {assigned.map((v) => (
+          <span key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 5, border: '1px solid var(--line)', borderRadius: 999, padding: '4px 6px 4px 10px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}>
+            {v.name} · {v.registration}
+            <button onClick={() => unassign(v.id)} disabled={busy} title="Unassign" style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--ink-muted)', padding: 2, display: 'flex' }}>
+              <X size={11} />
+            </button>
+          </span>
+        ))}
+      </div>
+      {adding && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select
+            value={pickId}
+            onChange={(e) => setPickId(e.target.value)}
+            style={{ border: '1px solid var(--line)', borderRadius: 8, padding: '6px 8px', fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)', background: '#fff' }}
+          >
+            <option value="">Select a vehicle…</option>
+            {available.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name} · {v.registration}
+              </option>
+            ))}
+          </select>
+          <button onClick={assign} disabled={busy || !pickId} style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', opacity: busy || !pickId ? 0.7 : 1 }}>
+            Add
+          </button>
+          <button onClick={() => { setAdding(false); setPickId('') }} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function JobsContent({
   summaries,
   clients,
@@ -2012,6 +2241,7 @@ function JobsContent({
   venuesList,
   projects,
   roles,
+  vehiclesList,
   selectedId,
   onSelect,
   reloadSummaries,
@@ -2026,6 +2256,7 @@ function JobsContent({
   venuesList: Venue[]
   projects: Project[]
   roles: Role[]
+  vehiclesList: Vehicle[]
   selectedId: string | undefined
   onSelect: (id: string) => void
   reloadSummaries: () => void
@@ -2044,17 +2275,32 @@ function JobsContent({
   const [editing, setEditing] = useState(false)
   const [bookingsByReq, setBookingsByReq] = useState<Record<string, Booking[]>>({})
   const [confirmEveryoneState, setConfirmEveryoneState] = useState<'idle' | 'confirming' | 'busy'>('idle')
+  // Testing feedback item E — the two new terminal-status actions. One
+  // shared piece of state (not two booleans) so confirming one can't
+  // somehow overlap with confirming the other.
+  const [statusAction, setStatusAction] = useState<'idle' | 'confirming-cancel' | 'confirming-complete' | 'busy'>('idle')
 
   useEffect(() => {
     if (prefill) setCreating(true)
   }, [prefill])
 
+  // Testing feedback item E: Complete jobs move to the Archive tab and
+  // drop out of the active Jobs list — filtered here (not in
+  // useJobSummaries itself) since Planner needs the same exclusion and
+  // Archive needs the opposite, and all three already share this one
+  // summaries fetch.
+  const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete'), [summaries])
+
   const filtered = useMemo(() => {
     const q = query.toLowerCase()
-    return summaries.filter((s) => s.job.name.toLowerCase().includes(q) || (clients[s.job.client_id]?.name ?? '').toLowerCase().includes(q))
-  }, [summaries, clients, query])
+    return activeSummaries.filter((s) => s.job.name.toLowerCase().includes(q) || (clients[s.job.client_id]?.name ?? '').toLowerCase().includes(q))
+  }, [activeSummaries, clients, query])
 
-  const selected = summaries.find((s) => s.job.id === selectedId) ?? summaries[0]
+  // Deliberately from activeSummaries, not filtered — selection stays put
+  // while someone types a search that would otherwise hide the open job
+  // from the list (unchanged existing behaviour); only completing a job
+  // actually clears it out from under them.
+  const selected = activeSummaries.find((s) => s.job.id === selectedId) ?? activeSummaries[0]
 
   useEffect(() => {
     if (!selected) return
@@ -2098,6 +2344,20 @@ function JobsContent({
     await Promise.all(pendingBookings.map((b) => confirmBooking(b.id)))
     reloadSummaries()
     setConfirmEveryoneState('idle')
+  }
+
+  // Testing feedback item E — Cancel/Complete both go through the same
+  // dedicated status endpoint (see updateJobStatus), never the full
+  // JobCreateForm edit path, so a status change here can't accidentally
+  // touch any other field on the Job.
+  async function setJobStatus(jobId: string, status: JobStatus) {
+    setStatusAction('busy')
+    try {
+      await updateJobStatus(jobId, status)
+      reloadSummaries()
+    } finally {
+      setStatusAction('idle')
+    }
   }
 
   function finishCreating(jobId: string) {
@@ -2185,10 +2445,11 @@ function JobsContent({
       <div style={{ flex: 1, overflowY: 'auto', padding: '28px 36px' }}>
         <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>{client?.name ?? 'Unknown client'}</div>
         <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginTop: 2 }}>{selected.job.name}</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}>
-          {/* Job-level tag is the derived 3-value vocabulary only (Cancelled/
-              Pencil/Booked, see commitmentTag) — the raw Job.status lifecycle
-              enum (draft..complete) is a separate axis and must never render
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+          {/* Job-level tag is the derived 4-value vocabulary only
+              (Cancelled/Complete/Pencilled/Booked, see jobStatusTag) — the
+              raw Job.status lifecycle enum (draft..live, the "internal
+              progress" states) is a separate axis and must never render
               here as a second, differently-coloured tag (it was leaking
               "confirmed"/"crewing"/etc. verbatim via urgencyFor's tier color,
               which is why testers saw "Confirmed" in several colours). */}
@@ -2206,6 +2467,28 @@ function JobsContent({
               style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
             >
               <Check size={11} /> Confirm everyone ({pendingBookings.length})
+            </button>
+          )}
+          {/* Terminal-status actions — hidden once already in that state,
+              and hidden from each other once one applies (a cancelled job
+              can still be marked complete if that's genuinely wanted, but
+              not the reverse; simplest to just gate each on its own
+              not-already-there check rather than encode a transition
+              graph nobody asked for here). */}
+          {statusAction === 'idle' && selected.job.status !== 'cancelled' && (
+            <button
+              onClick={() => setStatusAction('confirming-cancel')}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--danger)', background: '#fff', color: 'var(--danger)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+            >
+              <X size={11} /> Cancel job
+            </button>
+          )}
+          {statusAction === 'idle' && selected.job.status !== 'complete' && selected.job.status !== 'cancelled' && (
+            <button
+              onClick={() => setStatusAction('confirming-complete')}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+            >
+              <CheckCircle2 size={11} /> Mark complete
             </button>
           )}
         </div>
@@ -2229,10 +2512,48 @@ function JobsContent({
           </div>
         )}
 
+        {statusAction === 'confirming-cancel' && (
+          <div style={{ border: '1px solid var(--danger)', background: 'var(--danger-bg)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+            <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>Cancel this job? It'll stay visible on the Jobs list, tagged Cancelled.</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setStatusAction('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+                Never mind
+              </button>
+              <button
+                onClick={() => setJobStatus(selected.job.id, 'cancelled')}
+                style={{ border: 'none', background: 'var(--danger)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+              >
+                Yes, cancel job
+              </button>
+            </div>
+          </div>
+        )}
+
+        {statusAction === 'confirming-complete' && (
+          <div style={{ border: '1px solid var(--line)', background: 'var(--surface)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+            <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>Mark this job Complete? It'll move to Archive and drop off the active Jobs list.</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setStatusAction('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+                Never mind
+              </button>
+              <button
+                onClick={() => setJobStatus(selected.job.id, 'complete')}
+                style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+              >
+                Yes, mark complete
+              </button>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 32, marginTop: 8, borderBottom: '1px solid var(--line)', paddingBottom: 4 }}>
           <InfoRow icon={CalendarDays} label="Dates" value={`${formatDate(selected.job.start_date)} – ${formatDate(selected.job.end_date)}`} />
           <InfoRow icon={MapPin} label="Venue" value={venueName ?? 'Not set'} />
           <InfoRow icon={Phone} label="Production contact" value={primaryContact ? `${primaryContact.name}${primaryContact.phone ? ' · ' + primaryContact.phone : ''}` : 'Not yet assigned'} />
+          {/* Only shown for Jobs actually linked to a shared Core Job (i.e.
+              fetched from Monday) — hand-created Jobs have no order_number
+              to show, per testing feedback item C. */}
+          {selected.job.shared_job_id && selected.job.order_number && <InfoRow icon={LinkIcon} label="Monday ref" value={selected.job.order_number} />}
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '24px 0 12px' }}>
@@ -2252,8 +2573,11 @@ function JobsContent({
               onCancelBooking={handleCancelBooking}
             />
           ))}
-          {selected.requirements.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No role requirements added yet.</div>}
+          {selected.requirements.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', gridColumn: '1 / -1' }}>No role requirements added yet.</div>}
+          <AddRoleRequirementRow jobId={selected.job.id} jobStartDate={selected.job.start_date} jobEndDate={selected.job.end_date} roles={roles} onAdded={reloadSummaries} />
         </div>
+
+        <JobVehiclesSection key={selected.job.id} jobId={selected.job.id} vehiclesList={vehiclesList} />
       </div>
     </>
   )
@@ -2393,7 +2717,12 @@ function PlannerContent({
   targetReqId?: string
   onConsumedTarget?: () => void
 }) {
-  const summary = summaries.find((s) => s.job.id === selectedJobId) ?? summaries[0]
+  // Testing feedback item E: Complete jobs move to Archive and are no
+  // longer schedulable here — same exclusion as JobsContent's own
+  // activeSummaries, applied independently since Planner gets its own
+  // summaries prop rather than sharing JobsContent's derived value.
+  const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete'), [summaries])
+  const summary = activeSummaries.find((s) => s.job.id === selectedJobId) ?? activeSummaries[0]
   const [activeReq, setActiveReq] = useState<JobRequirementWithCounts | undefined>(undefined)
 
   // Picks the default (first unfulfilled requirement) whenever the
@@ -2458,7 +2787,7 @@ function PlannerContent({
       <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginBottom: 16 }}>Planner</div>
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 24, overflowX: 'auto' }}>
-        {summaries.map((s, i) => (
+        {activeSummaries.map((s, i) => (
           <JobChip key={s.job.id} summary={s} client={clients[s.job.client_id]} fallbackIndex={i} active={s.job.id === summary.job.id} onClick={() => onSelectJob(s.job.id)} />
         ))}
       </div>
@@ -2779,8 +3108,21 @@ function ResourceCalendarContent({
   const startDate = dateISO(dates[0])
   const endDate = dateISO(dates[dates.length - 1])
 
-  const { data, loading } = useResourceCalendar(startDate, endDate, includeIds)
+  const { data, loading, reload } = useResourceCalendar(startDate, endDate, includeIds)
   const today = new Date()
+
+  // Testing feedback item D: a second scheduler's changes (a new booking,
+  // a newly-crewed Job) weren't visible here until a manual page refresh —
+  // a real double-booking risk with more than one scheduler working at
+  // once. Polling, not push (websockets are a bigger undertaking than
+  // asked for here); this component only exists while the Team tab is
+  // actually the active one (see RaltoDesktopApp's conditional render), so
+  // mount/unmount alone gates the interval to "only when visible" with no
+  // extra active==='team' check needed here.
+  useEffect(() => {
+    const id = setInterval(reload, 45000)
+    return () => clearInterval(id)
+  }, [reload])
 
   const goPrev = () => {
     if (mode === 'month') return setRefDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))
@@ -2987,6 +3329,74 @@ function ResourceCalendarContent({
 }
 
 // ---------------------------------------------------------------------------
+// Archive — testing feedback item E. Complete jobs, separate from the
+// active Jobs list. Unfiltered view reuses the same summaries already
+// fetched at the root (no new request) since it only needs
+// name/client/dates; the crew filter switches to a dedicated per-person
+// endpoint (useCompletedJobsForPerson) rather than fetching every
+// completed job's bookings just to filter client-side.
+// ---------------------------------------------------------------------------
+
+function ArchiveRow({ name, clientName, startDate, endDate }: { name: string; clientName: string; startDate: string; endDate: string }) {
+  return (
+    <div style={{ border: '1px solid var(--line)', borderRadius: 10, background: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div>
+        <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{name}</div>
+        <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>{clientName}</div>
+      </div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>
+        {formatDate(startDate)} – {formatDate(endDate)}
+      </div>
+    </div>
+  )
+}
+
+function ArchiveContent({ summaries, clients, people }: { summaries: JobSummary[]; clients: Record<string, Client>; people: Person[] }) {
+  const [personFilter, setPersonFilter] = useState('')
+  const completed = useMemo(() => summaries.filter((s) => s.job.status === 'complete'), [summaries])
+  const { data: personCompleted, loading: personLoading } = useCompletedJobsForPerson(personFilter || undefined)
+
+  const sortedPeople = useMemo(() => [...people].sort((a, b) => `${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`)), [people])
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)' }}>Archive</div>
+      </div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Completed jobs — moved out of the active Jobs list once marked Complete.</div>
+
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)', maxWidth: 280, marginBottom: 20 }}>
+        Filter to one crew member's history
+        <select
+          value={personFilter}
+          onChange={(e) => setPersonFilter(e.target.value)}
+          style={{ border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px', fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink)', background: '#fff' }}
+        >
+          <option value="">All completed jobs</option>
+          {sortedPeople.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.first_name} {p.last_name}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 640 }}>
+        {!personFilter &&
+          completed.map((s) => <ArchiveRow key={s.job.id} name={s.job.name} clientName={clients[s.job.client_id]?.name ?? 'Unknown client'} startDate={s.job.start_date} endDate={s.job.end_date} />)}
+        {!personFilter && completed.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No completed jobs yet.</div>}
+
+        {personFilter && personLoading && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>Loading…</div>}
+        {personFilter && !personLoading && personCompleted.map((j) => <ArchiveRow key={j.id} name={j.name} clientName={j.client_name} startDate={j.start_date} endDate={j.end_date} />)}
+        {personFilter && !personLoading && personCompleted.length === 0 && (
+          <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No completed jobs for this person yet.</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Crew (scheduler's people directory)
 //
 // Simplification vs. the original mock: the prototype's per-person
@@ -3014,30 +3424,48 @@ const CREW_FILTERS = [
 // originally requested, and Settings → Roles is how that gets reconciled,
 // not a hardcoded label list here. A one-off (a typo, a category someone's
 // about to rename) folds into "Other" instead of fragmenting the row —
-// same principle as "no one" and "no primary role" both landing there.
+// same principle as "no one" and "no roles at all" both landing there.
+//
+// Counted from role_categories (every role a person holds), not just
+// primary_role_category — a filter is meant to find "who can do this",
+// which includes a secondary skill, not only someone's main discipline.
+// A person can therefore match more than one discipline button at once;
+// that's intentional (unlike primary_role_category's on-card label, which
+// still shows exactly one). Sound/Production/VT existing as real roles
+// with real people holding them, but almost never as anyone's *primary*
+// role, is exactly why they were invisible under the old primary-only
+// count — confirmed against live data before making this change.
 const MIN_DISCIPLINE_COUNT = 2
 const OTHER_DISCIPLINE = 'other'
 
 function disciplineBuckets(people: Person[]): { categories: string[]; hasOther: boolean } {
   const counts = new Map<string, number>()
-  let otherCount = 0
   for (const p of people) {
-    const cat = p.primary_role_category?.trim()
-    if (cat) counts.set(cat, (counts.get(cat) ?? 0) + 1)
-    else otherCount++
+    for (const cat of new Set((p.role_categories ?? []).map((c) => c.trim()).filter(Boolean))) {
+      counts.set(cat, (counts.get(cat) ?? 0) + 1)
+    }
   }
   const categories: string[] = []
   for (const [cat, count] of counts) {
     if (count >= MIN_DISCIPLINE_COUNT) categories.push(cat)
-    else otherCount += count
   }
   categories.sort((a, b) => a.localeCompare(b))
-  return { categories, hasOther: otherCount > 0 }
+
+  // "Other" catches everyone with no role at all, plus anyone whose roles
+  // are all below-threshold ones that didn't earn their own button —
+  // mirrors the old primary-only behaviour's fold-in, just evaluated
+  // against the full role set instead of a single primary category.
+  const categorySet = new Set(categories)
+  const hasOther = people.some((p) => {
+    const cats = (p.role_categories ?? []).map((c) => c.trim()).filter(Boolean)
+    return cats.length === 0 || cats.every((c) => !categorySet.has(c))
+  })
+  return { categories, hasOther }
 }
 
-function disciplineOf(person: Person, realCategories: Set<string>): string {
-  const cat = person.primary_role_category?.trim()
-  return cat && realCategories.has(cat) ? cat : OTHER_DISCIPLINE
+function personHasDiscipline(person: Person, discipline: string, realCategories: Set<string>): boolean {
+  if (discipline === OTHER_DISCIPLINE) return (person.role_categories ?? []).every((c) => !realCategories.has(c.trim()))
+  return (person.role_categories ?? []).some((c) => c.trim() === discipline)
 }
 
 // personToWriteInput — UpdatePerson overwrites every column in
@@ -3062,6 +3490,7 @@ function personToWriteInput(p: Person): PersonWriteInput {
     notes: p.notes,
     phone_number: p.phone_number,
     notification_channels: p.notification_channels,
+    vehicle_registration: p.vehicle_registration,
   }
 }
 
@@ -3093,6 +3522,7 @@ function PersonForm({
   const [standardRate, setStandardRate] = useState(person?.standard_rate != null ? String(person.standard_rate) : '')
   const [rateCurrency, setRateCurrency] = useState(person?.rate_currency ?? '')
   const [notes, setNotes] = useState(person?.notes ?? '')
+  const [vehicleRegistration, setVehicleRegistration] = useState(person?.vehicle_registration ?? '')
   const [roleId, setRoleId] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
@@ -3122,6 +3552,7 @@ function PersonForm({
         standard_rate: standardRate ? Number(standardRate) : undefined,
         rate_currency: rateCurrency || undefined,
         notes: notes || undefined,
+        vehicle_registration: vehicleRegistration || undefined,
       }
       const saved = person ? await updatePerson(person.id, payload) : await createPerson(payload)
       if (!person && roleId) {
@@ -3172,6 +3603,13 @@ function PersonForm({
               <option value="freelancer">Freelancer</option>
               <option value="staff">Staff</option>
             </select>
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', gap: 14 }}>
+          <label style={{ ...labelStyle, flex: 1 }}>
+            Vehicle registration (optional)
+            <input value={vehicleRegistration} onChange={(e) => setVehicleRegistration(e.target.value)} placeholder="e.g. AB12 CDE" style={inputStyle} />
           </label>
         </div>
 
@@ -3493,11 +3931,34 @@ function PersonHistoryTab({ person }: { person: Person }) {
   )
 }
 
-type PersonTabKey = 'availability' | 'roles' | 'history'
+// PersonCompletedJobsTab — testing feedback item E's Archive crew-filter,
+// surfaced a second place: sitting alongside the existing (read-only,
+// ScheduleIt-imported) History tab rather than merged into it. Genuinely
+// different data — real Ralto Jobs this person actually worked, not
+// legacy imported rows — so it gets its own tab in the same profile area
+// instead of conflating two different sources into one list.
+function PersonCompletedJobsTab({ person }: { person: Person }) {
+  const { data: jobs, loading } = useCompletedJobsForPerson(person.id)
+
+  return (
+    <div>
+      <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 12 }}>Completed jobs</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {jobs.map((j) => (
+          <ArchiveRow key={j.id} name={j.name} clientName={j.client_name} startDate={j.start_date} endDate={j.end_date} />
+        ))}
+        {!loading && jobs.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', padding: '12px 0' }}>No completed jobs for this person yet.</div>}
+      </div>
+    </div>
+  )
+}
+
+type PersonTabKey = 'availability' | 'roles' | 'history' | 'completed'
 const PERSON_TABS: { key: PersonTabKey; label: string }[] = [
   { key: 'availability', label: 'Availability' },
   { key: 'roles', label: 'Roles' },
   { key: 'history', label: 'History' },
+  { key: 'completed', label: 'Completed jobs' },
 ]
 
 function PersonRolesTab({
@@ -3699,6 +4160,7 @@ function PersonDetail({ person, roles, onBack, reloadPeople }: { person: Person;
         {primaryRole && <span>{primaryRole.role_name} · </span>}
         <span style={{ textTransform: 'capitalize' }}>{person.employment_type}</span>
         {person.base_location ? ` · ${person.base_location}` : ''}
+        {person.vehicle_registration ? ` · ${person.vehicle_registration}` : ''}
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
@@ -3792,6 +4254,7 @@ function PersonDetail({ person, roles, onBack, reloadPeople }: { person: Person;
       {tab === 'availability' && <PersonAvailabilityTab person={person} />}
       {tab === 'roles' && <PersonRolesTab person={person} roles={roles} personRoles={personRoles} loading={rolesLoading} reload={reloadPersonRoles} />}
       {tab === 'history' && <PersonHistoryTab person={person} />}
+      {tab === 'completed' && <PersonCompletedJobsTab person={person} />}
     </div>
   )
 }
@@ -3810,7 +4273,7 @@ function CrewContent({ people, roles, reloadPeople }: { people: Person[]; roles:
     let list = people.filter((p) => `${p.first_name} ${p.last_name}`.toLowerCase().includes(query.toLowerCase()))
     if (filter === 'preferred') list = list.filter((p) => p.preferred_status === 'preferred')
     if (filter === 'staff' || filter === 'freelancer') list = list.filter((p) => p.employment_type === filter)
-    if (discipline !== 'all') list = list.filter((p) => disciplineOf(p, disciplineCategorySet) === discipline)
+    if (discipline !== 'all') list = list.filter((p) => personHasDiscipline(p, discipline, disciplineCategorySet))
     return list
   }, [people, query, filter, discipline, disciplineCategorySet])
 
@@ -4038,6 +4501,122 @@ function RolesSection({ roles, reload }: { roles: Role[]; reload: () => void }) 
           ),
         )}
         {roles.length === 0 && !creating && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No roles yet.</div>}
+      </div>
+    </div>
+  )
+}
+
+function VehicleForm({ vehicle, onCancel, onSaved }: { vehicle?: Vehicle; onCancel: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(vehicle?.name ?? '')
+  const [registration, setRegistration] = useState(vehicle?.registration ?? '')
+  const [notes, setNotes] = useState(vehicle?.notes ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  async function submit() {
+    if (!name.trim() || !registration.trim()) {
+      setError('Name and registration are both required.')
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      const payload = { name, registration, notes: notes || undefined }
+      if (vehicle) await updateVehicle(vehicle.id, payload)
+      else await createVehicle(payload)
+      onSaved()
+    } catch {
+      setError('Could not save that vehicle.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ ...settingsRowStyle, flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <label style={{ ...settingsLabelStyle, flex: 1 }}>
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Transit Van 1" style={settingsInputStyle} />
+        </label>
+        <label style={{ ...settingsLabelStyle, flex: 1 }}>
+          Registration
+          <input value={registration} onChange={(e) => setRegistration(e.target.value)} placeholder="e.g. AB12 CDE" style={settingsInputStyle} />
+        </label>
+      </div>
+      <label style={settingsLabelStyle}>
+        Notes (optional)
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} style={settingsInputStyle} />
+      </label>
+      {error && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={settingsCancelButtonStyle}>
+          Cancel
+        </button>
+        <button onClick={submit} disabled={saving} style={{ ...settingsPrimaryButtonStyle, opacity: saving ? 0.7 : 1 }}>
+          {saving ? 'Saving…' : vehicle ? 'Save' : 'Add vehicle'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function VehiclesSection({ vehicles, reload }: { vehicles: Vehicle[]; reload: () => void }) {
+  const [creating, setCreating] = useState(false)
+  const [editingId, setEditingId] = useState<string | undefined>(undefined)
+  const { pendingId, setPendingId, blocked, confirmDelete } = useDeleteWithGuard(deleteVehicle, reload)
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)' }}>Vehicles</span>
+        {!creating && (
+          <button onClick={() => setCreating(true)} style={settingsAddButtonStyle}>
+            <Plus size={13} /> Add vehicle
+          </button>
+        )}
+      </div>
+      {creating && (
+        <div style={{ marginBottom: 10 }}>
+          <VehicleForm onCancel={() => setCreating(false)} onSaved={() => { setCreating(false); reload() }} />
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {vehicles.map((vehicle) =>
+          editingId === vehicle.id ? (
+            <VehicleForm key={vehicle.id} vehicle={vehicle} onCancel={() => setEditingId(undefined)} onSaved={() => { setEditingId(undefined); reload() }} />
+          ) : (
+            <div key={vehicle.id}>
+              <div style={settingsRowStyle}>
+                <div style={{ flex: 1, fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink)' }}>
+                  <span style={{ fontWeight: 600 }}>{vehicle.name}</span>
+                  <span style={{ color: 'var(--ink-muted)' }}> · {vehicle.registration}</span>
+                </div>
+                {pendingId === vehicle.id ? (
+                  <>
+                    <span style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)' }}>Delete this vehicle?</span>
+                    <button onClick={() => setPendingId(undefined)} style={{ ...settingsCancelButtonStyle, padding: '5px 10px' }}>
+                      Cancel
+                    </button>
+                    <button onClick={() => confirmDelete(vehicle.id)} style={{ ...settingsPrimaryButtonStyle, background: 'var(--danger)', padding: '5px 10px' }}>
+                      Confirm
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => setEditingId(vehicle.id)} title="Edit vehicle" style={settingsIconButtonStyle}>
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => setPendingId(vehicle.id)} title="Delete vehicle" style={settingsIconButtonStyle}>
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                )}
+              </div>
+              {blocked?.id === vehicle.id && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{blocked.message}</div>}
+            </div>
+          ),
+        )}
+        {vehicles.length === 0 && !creating && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No fleet vehicles yet.</div>}
       </div>
     </div>
   )
@@ -4404,15 +4983,26 @@ function DakboardFeedSection() {
   )
 }
 
-type SettingsTabKey = 'roles' | 'overtime' | 'skills' | 'dakboard'
+type SettingsTabKey = 'roles' | 'overtime' | 'skills' | 'vehicles' | 'dakboard'
 const SETTINGS_TABS: { key: SettingsTabKey; label: string }[] = [
   { key: 'roles', label: 'Roles' },
   { key: 'overtime', label: 'Overtime rules' },
   { key: 'skills', label: 'Skills' },
+  { key: 'vehicles', label: 'Vehicles' },
   { key: 'dakboard', label: 'Dakboard feed' },
 ]
 
-function SettingsContent({ roles, reloadRoles }: { roles: Role[]; reloadRoles: () => void }) {
+function SettingsContent({
+  roles,
+  reloadRoles,
+  vehicles,
+  reloadVehicles,
+}: {
+  roles: Role[]
+  reloadRoles: () => void
+  vehicles: Vehicle[]
+  reloadVehicles: () => void
+}) {
   const [tab, setTab] = useState<SettingsTabKey>('roles')
   const { data: overtimeRules, reload: reloadOvertimeRules } = useOvertimeRules()
   const { data: skills, reload: reloadSkills } = useSkills()
@@ -4420,7 +5010,7 @@ function SettingsContent({ roles, reloadRoles }: { roles: Role[]; reloadRoles: (
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
       <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginBottom: 4 }}>Settings</div>
-      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, skills — plus the shared Dakboard feed link.</div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, skills, fleet vehicles — plus the shared Dakboard feed link.</div>
 
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 20 }}>
         {SETTINGS_TABS.map((t) => (
@@ -4449,6 +5039,7 @@ function SettingsContent({ roles, reloadRoles }: { roles: Role[]; reloadRoles: (
         {tab === 'roles' && <RolesSection roles={roles} reload={reloadRoles} />}
         {tab === 'overtime' && <OvertimeRulesSection rules={overtimeRules} reload={reloadOvertimeRules} />}
         {tab === 'skills' && <SkillsSection skills={skills} reload={reloadSkills} />}
+        {tab === 'vehicles' && <VehiclesSection vehicles={vehicles} reload={reloadVehicles} />}
         {tab === 'dakboard' && <DakboardFeedSection />}
       </div>
     </div>
@@ -4471,11 +5062,26 @@ export function RaltoDesktopApp() {
   const { data: venuesList } = useVenues()
   const { data: projectsList } = useProjects()
   const { data: rolesList, reload: reloadRoles } = useRoles()
+  const { data: vehiclesList, reload: reloadVehicles } = useVehicles()
   const { data: people, reload: reloadPeople } = usePeople()
   const { data: alerts, reload: reloadAlerts } = useAlerts()
 
   const clients = useMemo(() => indexById(clientsList), [clientsList])
   const venues = useMemo(() => indexById(venuesList), [venuesList])
+
+  // Testing feedback item D: Jobs and Planner both read from this same
+  // summaries list (see JobsContent/PlannerContent's shared props below),
+  // fetched once at mount regardless of which tab is active — same as
+  // it's always been. Polling it keeps a second scheduler's new Job (or
+  // newly-added crew) visible here within the interval instead of only on
+  // a manual page refresh, without discarding anything: JobCreateForm
+  // seeds its own local state once at mount and isn't re-derived from
+  // summaries afterwards (confirmed before adding this), so a background
+  // refetch here can't blow away an in-progress create/edit.
+  useEffect(() => {
+    const id = setInterval(reloadSummaries, 45000)
+    return () => clearInterval(id)
+  }, [reloadSummaries])
 
   const openJobFromCalendar = (jobId: string) => {
     setSelectedPlannerJobId(jobId)
@@ -4560,6 +5166,7 @@ export function RaltoDesktopApp() {
           venuesList={venuesList}
           projects={projectsList}
           roles={rolesList}
+          vehiclesList={vehiclesList}
           selectedId={selectedJobId}
           onSelect={setSelectedJobId}
           reloadSummaries={reloadSummaries}
@@ -4581,7 +5188,8 @@ export function RaltoDesktopApp() {
         />
       )}
       {active === 'crew' && <CrewContent people={people} roles={rolesList} reloadPeople={reloadPeople} />}
-      {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} />}
+      {active === 'archive' && <ArchiveContent summaries={summaries} clients={clients} people={people} />}
+      {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} vehicles={vehiclesList} reloadVehicles={reloadVehicles} />}
     </div>
   )
 }

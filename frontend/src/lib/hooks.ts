@@ -28,6 +28,7 @@ import type {
   ScheduleItHistory,
   Skill,
   SkillType,
+  Vehicle,
   Venue,
 } from '../types'
 
@@ -90,6 +91,34 @@ export function deleteRole(id: string) {
   return api.delete<{ ok: boolean }>(`/roles/${id}`)
 }
 
+export function useVehicles() {
+  return useCollection<Vehicle>('/vehicles')
+}
+
+export function createVehicle(input: { name: string; registration: string; notes?: string }) {
+  return api.post<Vehicle>('/vehicles', input)
+}
+
+export function updateVehicle(id: string, input: { name: string; registration: string; notes?: string }) {
+  return api.put<Vehicle>(`/vehicles/${id}`, input)
+}
+
+export function deleteVehicle(id: string) {
+  return api.delete<{ ok: boolean }>(`/vehicles/${id}`)
+}
+
+export function listJobVehicles(jobId: string) {
+  return api.get<Vehicle[]>(`/jobs/${jobId}/vehicles`)
+}
+
+export function assignVehicleToJob(jobId: string, vehicleId: string) {
+  return api.post(`/jobs/${jobId}/vehicles`, { vehicle_id: vehicleId })
+}
+
+export function unassignVehicleFromJob(jobId: string, vehicleId: string) {
+  return api.delete(`/jobs/${jobId}/vehicles/${vehicleId}`)
+}
+
 export function useOvertimeRules() {
   return useCollection<OvertimeRule>('/overtime-rules')
 }
@@ -148,6 +177,49 @@ export function createJob(input: CreateJobInput) {
 
 export function updateJob(id: string, input: CreateJobInput) {
   return api.put<Job>(`/jobs/${id}`, input)
+}
+
+// updateJobStatus — testing feedback item E's Cancel/Complete actions. A
+// dedicated single-field endpoint (see UpdateJobStatus in
+// backend/internal/handlers/jobs.go), not a partial call into
+// createJob/updateJob's full-record shape.
+export function updateJobStatus(id: string, status: JobStatus) {
+  return api.post<Job>(`/jobs/${id}/status`, { status })
+}
+
+// A completed Job worked by a specific person — the Archive view's crew
+// filter and PersonDetail's "Completed jobs" tab both read this, mirroring
+// ScheduleItHistory's own shape (see backend's completedJobSummary).
+export interface CompletedJobSummary {
+  id: string
+  name: string
+  client_name: string
+  start_date: string
+  end_date: string
+}
+
+export function useCompletedJobsForPerson(personId: string | undefined) {
+  const [data, setData] = useState<CompletedJobSummary[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const reload = useCallback(() => {
+    if (!personId) {
+      setData([])
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    api
+      .get<CompletedJobSummary[]>(`/people/${personId}/completed-jobs`)
+      .then(setData)
+      .finally(() => setLoading(false))
+  }, [personId])
+
+  useEffect(() => {
+    reload()
+  }, [reload])
+
+  return { data, loading, reload }
 }
 
 // --- Job "Fetch from Monday", Stage A — everything here proxies through
@@ -429,6 +501,7 @@ export interface PersonWriteInput {
   notes?: string
   phone_number?: string
   notification_channels?: string
+  vehicle_registration?: string
 }
 
 export function createPerson(input: PersonWriteInput) {

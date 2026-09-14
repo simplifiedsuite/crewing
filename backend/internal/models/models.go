@@ -115,6 +115,10 @@ type Job struct {
 	// created a new one. See migrations/0010 and Core's own
 	// migrations/0008_jobs.sql.
 	SharedJobID *string `json:"shared_job_id,omitempty"`
+	// OrderNumber is the Monday order number this Job was fetched with —
+	// cached locally at fetch/create time (see migrations/0012), never
+	// live-refreshed. Only set alongside SharedJobID; nil for hand-created Jobs.
+	OrderNumber        *string       `json:"order_number,omitempty"`
 	StartDate          string        `json:"start_date"`
 	EndDate            string        `json:"end_date"`
 	Status             JobStatus     `json:"status"`
@@ -164,6 +168,18 @@ type Role struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
 	Category *string `json:"category,omitempty"`
+}
+
+// Vehicle is a company fleet vehicle (e.g. "Transit Van 1") — distinct
+// from Person.VehicleRegistration, which is a crew member's own personal
+// car. Assignable to Jobs via job_vehicles (see migrations/0014).
+type Vehicle struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Registration string    `json:"registration"`
+	Notes        *string   `json:"notes,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // --- JobRequirement ---
@@ -221,6 +237,11 @@ type Person struct {
 	CalendarFeedToken    *string         `json:"-"` // never serialized; exposed only via its own endpoint
 	PhoneNumber          *string         `json:"phone_number,omitempty"`
 	NotificationChannels *string         `json:"notification_channels,omitempty"` // JSON, e.g. {"email":true,"whatsapp":false}
+	// VehicleRegistration is the crew member's own personal vehicle — for
+	// site/parking access, not a fleet vehicle (see the separate Vehicle
+	// entity, migrations/0014_fleet_vehicles.sql). Editable by both the
+	// scheduler and the crew member themselves.
+	VehicleRegistration *string `json:"vehicle_registration,omitempty"`
 	Active               bool            `json:"active"`
 	MustChangePassword   bool            `json:"must_change_password"`
 	PasswordHash         *string         `json:"-"`

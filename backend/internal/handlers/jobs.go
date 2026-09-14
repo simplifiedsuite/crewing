@@ -10,11 +10,11 @@ import (
 	"ralto/internal/models"
 )
 
-const jobSelectColumns = `id, name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id,
+const jobSelectColumns = `id, name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, order_number,
 	        start_date, end_date, status, commitment, color_hex, notes, created_by, created_at, updated_at`
 
 func scanJob(row pgx.Row, j *models.Job) error {
-	return row.Scan(&j.ID, &j.Name, &j.ClientID, &j.ProjectReference, &j.VenueID, &j.ProjectID, &j.SharedContractID, &j.SharedContractName, &j.SharedJobID,
+	return row.Scan(&j.ID, &j.Name, &j.ClientID, &j.ProjectReference, &j.VenueID, &j.ProjectID, &j.SharedContractID, &j.SharedContractName, &j.SharedJobID, &j.OrderNumber,
 		&j.StartDate, &j.EndDate, &j.Status, &j.Commitment, &j.ColorHex, &j.Notes, &j.CreatedBy, &j.CreatedAt, &j.UpdatedAt)
 }
 
@@ -67,6 +67,7 @@ type jobWriteRequest struct {
 	SharedContractID   *string              `json:"shared_contract_id"`
 	SharedContractName *string              `json:"shared_contract_name"`
 	SharedJobID        *string              `json:"shared_job_id"`
+	OrderNumber        *string              `json:"order_number"`
 	StartDate          string               `json:"start_date"`
 	EndDate            string               `json:"end_date"`
 	Status             models.JobStatus     `json:"status"`
@@ -94,10 +95,10 @@ func (a *API) CreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	var j models.Job
 	err := scanJob(a.DB.QueryRow(r.Context(),
-		`INSERT INTO jobs (name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, start_date, end_date, status, commitment, color_hex, notes, created_by, organisation_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		`INSERT INTO jobs (name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, order_number, start_date, end_date, status, commitment, color_hex, notes, created_by, organisation_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		 RETURNING `+jobSelectColumns,
-		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, staff, currentOrgID,
+		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.OrderNumber, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, staff, currentOrgID,
 	), &j)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create job")
@@ -116,11 +117,11 @@ func (a *API) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	var j models.Job
 	err := scanJob(a.DB.QueryRow(r.Context(),
 		`UPDATE jobs SET name = $1, client_id = $2, project_reference = $3, venue_id = $4, project_id = $5,
-		        shared_contract_id = $6, shared_contract_name = $7, shared_job_id = $8,
-		        start_date = $9, end_date = $10, status = $11, commitment = $12, color_hex = $13, notes = $14, updated_at = now()
-		 WHERE id = $15 AND organisation_id = $16
+		        shared_contract_id = $6, shared_contract_name = $7, shared_job_id = $8, order_number = $9,
+		        start_date = $10, end_date = $11, status = $12, commitment = $13, color_hex = $14, notes = $15, updated_at = now()
+		 WHERE id = $16 AND organisation_id = $17
 		 RETURNING `+jobSelectColumns,
-		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, id, currentOrgID,
+		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.OrderNumber, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, id, currentOrgID,
 	), &j)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "job not found")
@@ -131,6 +132,97 @@ func (a *API) UpdateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, j)
+}
+
+var validJobStatuses = map[models.JobStatus]bool{
+	models.JobStatusDraft:     true,
+	models.JobStatusDefining:  true,
+	models.JobStatusCrewing:   true,
+	models.JobStatusConfirmed: true,
+	models.JobStatusBriefed:   true,
+	models.JobStatusLive:      true,
+	models.JobStatusComplete:  true,
+	models.JobStatusCancelled: true,
+}
+
+type jobStatusRequest struct {
+	Status models.JobStatus `json:"status"`
+}
+
+// UpdateJobStatus is a dedicated, single-field action — testing feedback
+// batch item E's "mark Cancelled"/"mark Complete" actions — rather than
+// routing a status change through the generic full-record UpdateJob,
+// which would require the caller to round-trip every other column just
+// to flip one. Matches this codebase's existing convention for small
+// state-transition actions (ConfirmBooking, ResolveAlert,
+// ConvertProspectiveEvent, etc.) over a bespoke PUT payload.
+func (a *API) UpdateJobStatus(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req jobStatusRequest
+	if err := readJSON(r, &req); err != nil || !validJobStatuses[req.Status] {
+		writeError(w, http.StatusBadRequest, "a valid status is required")
+		return
+	}
+	var j models.Job
+	err := scanJob(a.DB.QueryRow(r.Context(),
+		`UPDATE jobs SET status = $1, updated_at = now() WHERE id = $2 AND organisation_id = $3 RETURNING `+jobSelectColumns,
+		req.Status, id, currentOrgID,
+	), &j)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update job status")
+		return
+	}
+	writeJSON(w, http.StatusOK, j)
+}
+
+// completedJobSummary is the Archive view's per-person row — a minimal
+// projection (not the full Job) since Archive/PersonDetail only ever
+// display name/client/dates, mirroring ScheduleItHistory's own shape.
+type completedJobSummary struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ClientName string `json:"client_name"`
+	StartDate  string `json:"start_date"`
+	EndDate    string `json:"end_date"`
+}
+
+// ListCompletedJobsForPerson backs both the Archive view's crew filter and
+// PersonDetail's own "Completed jobs" tab (sitting alongside, not
+// replacing, the read-only ScheduleIt history tab — see
+// ListScheduleItHistoryForPerson, which this deliberately mirrors: same
+// person-scoped, read-only shape, same place in the Crew profile area).
+// DISTINCT because a person can hold more than one booking on the same
+// Job (different roles/requirements) and should still appear once.
+func (a *API) ListCompletedJobsForPerson(w http.ResponseWriter, r *http.Request) {
+	personID := chi.URLParam(r, "id")
+	rows, err := a.DB.Query(r.Context(),
+		`SELECT DISTINCT j.id, j.name, c.name AS client_name, j.start_date, j.end_date
+		 FROM jobs j
+		 JOIN clients c ON c.id = j.client_id
+		 JOIN job_requirements jr ON jr.job_id = j.id
+		 JOIN bookings b ON b.job_requirement_id = jr.id
+		 WHERE b.person_id = $1 AND j.status = 'complete' AND j.organisation_id = $2
+		 ORDER BY j.start_date DESC`, personID, currentOrgID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list completed jobs")
+		return
+	}
+	defer rows.Close()
+
+	jobs := []completedJobSummary{}
+	for rows.Next() {
+		var j completedJobSummary
+		if err := rows.Scan(&j.ID, &j.Name, &j.ClientName, &j.StartDate, &j.EndDate); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list completed jobs")
+			return
+		}
+		jobs = append(jobs, j)
+	}
+	writeJSON(w, http.StatusOK, jobs)
 }
 
 func (a *API) DeleteJob(w http.ResponseWriter, r *http.Request) {

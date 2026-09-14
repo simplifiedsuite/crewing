@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Home as HomeIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight, Link as LinkIcon, Copy, RefreshCw } from 'lucide-react'
+import { Home as HomeIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight, Link as LinkIcon, Copy, RefreshCw, Car } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { formatTime } from '../../lib/format'
 import { useCrewAuth } from '../../context/CrewAuthContext'
@@ -364,6 +364,7 @@ function ProfileEditForm({ person, onCancel, onSaved }: { person: Person; onCanc
   const [email, setEmail] = useState(person.email)
   const [phone, setPhone] = useState(person.phone ?? '')
   const [baseLocation, setBaseLocation] = useState(person.base_location ?? '')
+  const [vehicleRegistration, setVehicleRegistration] = useState(person.vehicle_registration ?? '')
   const initialChannels = useMemo(() => {
     try {
       return person.notification_channels ? (JSON.parse(person.notification_channels) as { email?: boolean; whatsapp?: boolean }) : {}
@@ -401,6 +402,7 @@ function ProfileEditForm({ person, onCancel, onSaved }: { person: Person; onCanc
         email,
         phone: phone || undefined,
         base_location: baseLocation || undefined,
+        vehicle_registration: vehicleRegistration || undefined,
         // Not surfaced on this form — carried forward as-is so saving
         // phone/location/notifications doesn't silently blank it out.
         phone_number: person.phone_number,
@@ -434,6 +436,10 @@ function ProfileEditForm({ person, onCancel, onSaved }: { person: Person; onCanc
       <label style={labelStyle}>
         Base location
         <input value={baseLocation} onChange={(e) => setBaseLocation(e.target.value)} style={inputStyle} />
+      </label>
+      <label style={labelStyle}>
+        Vehicle registration (optional)
+        <input value={vehicleRegistration} onChange={(e) => setVehicleRegistration(e.target.value)} placeholder="For site/parking access" style={inputStyle} />
       </label>
 
       <div style={labelStyle}>
@@ -643,6 +649,8 @@ function ProfileScreen() {
         <Row icon={Mail} label="Email" value={person?.email ?? 'Not set'} />
         <Divider />
         <Row icon={Phone} label="Phone" value={person?.phone || 'Not set'} />
+        <Divider />
+        <Row icon={Car} label="Vehicle registration" value={person?.vehicle_registration || 'Not set'} />
       </div>
 
       <SectionLabelInline>Documents</SectionLabelInline>

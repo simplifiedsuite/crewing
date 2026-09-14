@@ -82,10 +82,23 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Get("/{id}", api.GetJob)
 			r.Put("/{id}", api.UpdateJob)
 			r.Delete("/{id}", api.DeleteJob)
+			r.Post("/{id}/status", api.UpdateJobStatus)
 			r.Get("/{id}/contacts", api.ListJobContacts)
 			r.Post("/{id}/contacts", api.CreateJobContact)
 			r.Get("/{id}/requirements", api.ListJobRequirementsWithCounts)
 			r.Post("/{id}/requirements", api.CreateJobRequirement)
+			r.Get("/{id}/vehicles", api.ListJobVehicles)
+			r.Post("/{id}/vehicles", api.AssignVehicleToJob)
+			r.Delete("/{id}/vehicles/{vehicleId}", api.UnassignVehicleFromJob)
+		})
+
+		// Fleet vehicles (Settings) — separate from a crew member's own
+		// personal vehicle_registration on Person. See internal/handlers/vehicles.go.
+		r.Route("/vehicles", func(r chi.Router) {
+			r.Get("/", api.ListVehicles)
+			r.Post("/", api.CreateVehicle)
+			r.Put("/{id}", api.UpdateVehicle)
+			r.Delete("/{id}", api.DeleteVehicle)
 		})
 
 		r.Route("/job-requirements", func(r chi.Router) {
@@ -117,6 +130,7 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Post("/{id}/calendar-feed-token", api.GenerateCalendarFeedToken)
 			r.Post("/{id}/invite-to-crew-app", api.InviteToCrewApp)
 			r.Get("/{id}/scheduleit-history", api.ListScheduleItHistoryForPerson)
+			r.Get("/{id}/completed-jobs", api.ListCompletedJobsForPerson)
 		})
 
 		r.Route("/skills", func(r chi.Router) {

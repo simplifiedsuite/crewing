@@ -16,7 +16,7 @@ import (
 
 const personSelectColumns = `id, first_name, last_name, email, phone, base_location, employment_type, status,
 	preferred_status, standard_rate, rate_currency, overtime_rule_id, notes, phone_number,
-	notification_channels, active, must_change_password, created_at, updated_at`
+	notification_channels, vehicle_registration, active, must_change_password, created_at, updated_at`
 
 // scanPerson scans the fixed personSelectColumns list into p. extra lets a
 // caller select additional trailing columns (e.g. password_hash for login)
@@ -24,7 +24,7 @@ const personSelectColumns = `id, first_name, last_name, email, phone, base_locat
 func scanPerson(row pgx.Row, p *models.Person, extra ...interface{}) error {
 	dest := []interface{}{&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone, &p.BaseLocation, &p.EmploymentType, &p.Status,
 		&p.PreferredStatus, &p.StandardRate, &p.RateCurrency, &p.OvertimeRuleID, &p.Notes, &p.PhoneNumber,
-		&p.NotificationChannels, &p.Active, &p.MustChangePassword, &p.CreatedAt, &p.UpdatedAt}
+		&p.NotificationChannels, &p.VehicleRegistration, &p.Active, &p.MustChangePassword, &p.CreatedAt, &p.UpdatedAt}
 	dest = append(dest, extra...)
 	return row.Scan(dest...)
 }
@@ -38,6 +38,13 @@ func scanPerson(row pgx.Row, p *models.Person, extra ...interface{}) error {
 type personListResponse struct {
 	models.Person
 	PrimaryRoleCategory *string `json:"primary_role_category,omitempty"`
+	// RoleCategories is every distinct category across ALL of this person's
+	// roles (not just their primary one) — the Crew screen's discipline
+	// filter matches against this, not PrimaryRoleCategory, so someone
+	// whose primary role is e.g. Camera Op but who also holds a Sound role
+	// is still findable under a Sound filter. See disciplineBuckets/
+	// personHasDiscipline in RaltoDesktopApp.tsx.
+	RoleCategories []string `json:"role_categories"`
 }
 
 func (a *API) ListPeople(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +57,9 @@ func (a *API) ListPeople(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.DB.Query(r.Context(),
 		`SELECT `+personSelectColumns+`,
 		        (SELECT ro.category FROM person_roles pr JOIN roles ro ON ro.id = pr.role_id
-		         WHERE pr.person_id = p.id AND pr.is_primary = true LIMIT 1) AS primary_role_category
+		         WHERE pr.person_id = p.id AND pr.is_primary = true LIMIT 1) AS primary_role_category,
+		        (SELECT COALESCE(array_agg(DISTINCT ro.category), '{}') FROM person_roles pr JOIN roles ro ON ro.id = pr.role_id
+		         WHERE pr.person_id = p.id AND ro.category IS NOT NULL) AS role_categories
 		 FROM people p WHERE p.organisation_id = $1 ORDER BY p.first_name, p.last_name`, currentOrgID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list people")
@@ -61,7 +70,7 @@ func (a *API) ListPeople(w http.ResponseWriter, r *http.Request) {
 	people := []personListResponse{}
 	for rows.Next() {
 		var p personListResponse
-		if err := scanPerson(rows, &p.Person, &p.PrimaryRoleCategory); err != nil {
+		if err := scanPerson(rows, &p.Person, &p.PrimaryRoleCategory, &p.RoleCategories); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list people")
 			return
 		}
@@ -100,6 +109,7 @@ type personWriteRequest struct {
 	Notes                *string                `json:"notes"`
 	PhoneNumber          *string                `json:"phone_number"`
 	NotificationChannels *string                `json:"notification_channels"`
+	VehicleRegistration  *string                `json:"vehicle_registration"`
 }
 
 // nilIfEmpty treats a *string pointing at "" the same as an absent key —
@@ -134,12 +144,12 @@ func (a *API) CreatePerson(w http.ResponseWriter, r *http.Request) {
 	err := scanPerson(a.DB.QueryRow(r.Context(),
 		`INSERT INTO people (first_name, last_name, email, phone, base_location, employment_type, status,
 		                      preferred_status, standard_rate, rate_currency, overtime_rule_id, notes,
-		                      phone_number, notification_channels, organisation_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		                      phone_number, notification_channels, vehicle_registration, organisation_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		 RETURNING `+personSelectColumns,
 		req.FirstName, req.LastName, req.Email, req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
 		req.PreferredStatus, req.StandardRate, req.RateCurrency, req.OvertimeRuleID, req.Notes,
-		req.PhoneNumber, req.NotificationChannels, currentOrgID,
+		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, currentOrgID,
 	), &p)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create person")
@@ -161,12 +171,12 @@ func (a *API) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 	err := scanPerson(a.DB.QueryRow(r.Context(),
 		`UPDATE people SET first_name = $1, last_name = $2, email = $3, phone = $4, base_location = $5,
 		        employment_type = $6, status = $7, preferred_status = $8, standard_rate = $9, rate_currency = $10,
-		        overtime_rule_id = $11, notes = $12, phone_number = $13, notification_channels = $14, updated_at = now()
-		 WHERE id = $15 AND organisation_id = $16
+		        overtime_rule_id = $11, notes = $12, phone_number = $13, notification_channels = $14, vehicle_registration = $15, updated_at = now()
+		 WHERE id = $16 AND organisation_id = $17
 		 RETURNING `+personSelectColumns,
 		req.FirstName, req.LastName, req.Email, req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
 		req.PreferredStatus, req.StandardRate, req.RateCurrency, req.OvertimeRuleID, req.Notes,
-		req.PhoneNumber, req.NotificationChannels, id, currentOrgID,
+		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, id, currentOrgID,
 	), &p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "person not found")

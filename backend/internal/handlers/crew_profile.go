@@ -23,6 +23,10 @@ type updateMyProfileRequest struct {
 	BaseLocation         *string `json:"base_location"`
 	PhoneNumber          *string `json:"phone_number"`
 	NotificationChannels *string `json:"notification_channels"`
+	// VehicleRegistration — testing feedback item F: a crew member's own
+	// personal vehicle, for site/parking access. Same self-edit tier as
+	// phone/base_location (no password re-check, unlike Email).
+	VehicleRegistration *string `json:"vehicle_registration"`
 	// CurrentPassword is required only when Email differs from what's on
 	// file — see below. Ignored otherwise.
 	CurrentPassword string `json:"current_password"`
@@ -67,10 +71,10 @@ func (a *API) UpdateMyProfile(w http.ResponseWriter, r *http.Request) {
 
 	var p models.Person
 	err := scanPerson(a.DB.QueryRow(r.Context(),
-		`UPDATE people SET email = $1, phone = $2, base_location = $3, phone_number = $4, notification_channels = $5, updated_at = now()
-		 WHERE id = $6 AND organisation_id = $7
+		`UPDATE people SET email = $1, phone = $2, base_location = $3, phone_number = $4, notification_channels = $5, vehicle_registration = $6, updated_at = now()
+		 WHERE id = $7 AND organisation_id = $8
 		 RETURNING `+personSelectColumns,
-		newEmail, req.Phone, req.BaseLocation, req.PhoneNumber, req.NotificationChannels, claims.PersonID, currentOrgID,
+		newEmail, req.Phone, req.BaseLocation, req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, claims.PersonID, currentOrgID,
 	), &p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "person not found")
