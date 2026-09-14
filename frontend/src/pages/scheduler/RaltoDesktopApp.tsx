@@ -1473,6 +1473,7 @@ function JobCreateForm({
   roles,
   prefill,
   editingJob,
+  embedded,
   onCancel,
   onCreated,
 }: {
@@ -1488,6 +1489,15 @@ function JobCreateForm({
   // production contacts stay create-only here, unrelated to this task and
   // already manageable from Planner/the job detail view.
   editingJob?: Job
+  // embedded — testing feedback: "Edit" used to swap the whole Jobs detail
+  // panel for this form, hiding Crewing-by-role/Add role/Assign a vehicle,
+  // which confused people into thinking those lived somewhere else. When
+  // true, this renders just the field/button content (no outer page
+  // padding, no "Edit job" title) so JobsContent can drop it inline into
+  // the same panel instead of replacing it. Only ever used with
+  // editingJob set — the "New job" creation flow is unaffected and still
+  // gets the full standalone page.
+  embedded?: boolean
   onCancel: () => void
   onCreated: (jobId: string) => void
 }) {
@@ -1744,18 +1754,15 @@ function JobCreateForm({
     }
   }
 
-  return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 22, color: 'var(--ink)' }}>{editingJob ? 'Edit job' : 'New job'}</div>
-      </div>
+  const content = (
+    <>
       {prefill?.fromProspectiveEventId && (
         <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--primary-soft)', fontStyle: 'italic', marginBottom: 16 }}>
           Converting from a prospective event — commitment defaults to Pencil.
         </div>
       )}
 
-      <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 14, marginTop: prefill?.fromProspectiveEventId ? 0 : 16 }}>
+      <div style={{ maxWidth: embedded ? undefined : 640, display: 'flex', flexDirection: 'column', gap: 14, marginTop: embedded ? 0 : prefill?.fromProspectiveEventId ? 0 : 16 }}>
         <div style={{ border: '1px dashed var(--primary-soft)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)' }}>Fetch from Monday</div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -2026,6 +2033,19 @@ function JobCreateForm({
           </button>
         </div>
       </div>
+    </>
+  )
+
+  if (embedded) {
+    return content
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 22, color: 'var(--ink)' }}>{editingJob ? 'Edit job' : 'New job'}</div>
+      </div>
+      {content}
     </div>
   )
 }
@@ -2307,6 +2327,16 @@ function JobsContent({
     api.get<JobContact[]>(`/jobs/${selected.job.id}/contacts`).then(setContacts).catch(() => setContacts([]))
   }, [selected?.job.id])
 
+  // Switching to a different Job in the sidebar while mid-edit exits edit
+  // mode rather than leaving a form open against a Job that's no longer
+  // the one on screen — Edit is now inline within this same panel (see
+  // testing feedback: it used to replace the whole panel, hiding Crewing
+  // by role/Add role/Assign a vehicle), so the sidebar stays clickable
+  // during an edit in a way it previously couldn't be.
+  useEffect(() => {
+    setEditing(false)
+  }, [selected?.job.id])
+
   // Bookings-with-names for every role on the selected job, fetched once
   // per role (bounded by role count, not headcount — not the per-person
   // N+1 CrewContent was built to avoid) so JobRoleRow can show real names
@@ -2384,20 +2414,6 @@ function JobsContent({
     return <JobCreateForm clients={Object.values(clients)} projects={projects} venues={venuesList} roles={roles} prefill={prefill} onCancel={cancelCreating} onCreated={finishCreating} />
   }
 
-  if (editing && selected) {
-    return (
-      <JobCreateForm
-        clients={Object.values(clients)}
-        projects={projects}
-        venues={venuesList}
-        roles={roles}
-        editingJob={selected.job}
-        onCancel={() => setEditing(false)}
-        onCreated={finishEditing}
-      />
-    )
-  }
-
   if (!selected) {
     return (
       <div style={{ flex: 1, padding: 32, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}>
@@ -2444,116 +2460,142 @@ function JobsContent({
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '28px 36px' }}>
         <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>{client?.name ?? 'Unknown client'}</div>
-        <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginTop: 2 }}>{selected.job.name}</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-          {/* Job-level tag is the derived 4-value vocabulary only
-              (Cancelled/Complete/Pencilled/Booked, see jobStatusTag) — the
-              raw Job.status lifecycle enum (draft..live, the "internal
-              progress" states) is a separate axis and must never render
-              here as a second, differently-coloured tag (it was leaking
-              "confirmed"/"crewing"/etc. verbatim via urgencyFor's tier color,
-              which is why testers saw "Confirmed" in several colours). */}
-          <CommitmentBadge job={selected.job} />
-          <button
-            onClick={() => setEditing(true)}
-            title="Edit job"
-            style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
-          >
-            <Pencil size={11} /> Edit
-          </button>
-          {pendingBookings.length > 0 && confirmEveryoneState === 'idle' && (
-            <button
-              onClick={() => setConfirmEveryoneState('confirming')}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
-            >
-              <Check size={11} /> Confirm everyone ({pendingBookings.length})
-            </button>
-          )}
-          {/* Terminal-status actions — both statuses are dead ends once
-              set: a cancelled job can't be re-cancelled or marked
-              complete, and vice versa. No transition graph beyond that,
-              since nobody asked for one — just gate each button on
-              "neither terminal state is already set". */}
-          {statusAction === 'idle' && selected.job.status !== 'cancelled' && (
-            <button
-              onClick={() => setStatusAction('confirming-cancel')}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--danger)', background: '#fff', color: 'var(--danger)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
-            >
-              <X size={11} /> Cancel job
-            </button>
-          )}
-          {statusAction === 'idle' && selected.job.status !== 'complete' && selected.job.status !== 'cancelled' && (
-            <button
-              onClick={() => setStatusAction('confirming-complete')}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
-            >
-              <CheckCircle2 size={11} /> Mark complete
-            </button>
-          )}
-        </div>
 
-        {confirmEveryoneState === 'confirming' && (
-          <div style={{ border: '1px solid var(--danger)', background: 'var(--danger-bg)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-            <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>
-              Confirm all {pendingBookings.length} pencilled/offered {pendingBookings.length === 1 ? 'booking' : 'bookings'} on this job? Each person will get a real confirmation email.
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => setConfirmEveryoneState('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
-                Cancel
-              </button>
+        {!editing ? (
+          <>
+            <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginTop: 2 }}>{selected.job.name}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+              {/* Job-level tag is the derived 4-value vocabulary only
+                  (Cancelled/Complete/Pencilled/Booked, see jobStatusTag) — the
+                  raw Job.status lifecycle enum (draft..live, the "internal
+                  progress" states) is a separate axis and must never render
+                  here as a second, differently-coloured tag (it was leaking
+                  "confirmed"/"crewing"/etc. verbatim via urgencyFor's tier color,
+                  which is why testers saw "Confirmed" in several colours). */}
+              <CommitmentBadge job={selected.job} />
               <button
-                onClick={confirmEveryoneNow}
-                style={{ border: 'none', background: 'var(--danger)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+                onClick={() => setEditing(true)}
+                title="Edit job"
+                style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
               >
-                Yes, confirm all
+                <Pencil size={11} /> Edit
               </button>
+              {pendingBookings.length > 0 && confirmEveryoneState === 'idle' && (
+                <button
+                  onClick={() => setConfirmEveryoneState('confirming')}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+                >
+                  <Check size={11} /> Confirm everyone ({pendingBookings.length})
+                </button>
+              )}
+              {/* Terminal-status actions — both statuses are dead ends once
+                  set: a cancelled job can't be re-cancelled or marked
+                  complete, and vice versa. No transition graph beyond that,
+                  since nobody asked for one — just gate each button on
+                  "neither terminal state is already set". */}
+              {statusAction === 'idle' && selected.job.status !== 'cancelled' && (
+                <button
+                  onClick={() => setStatusAction('confirming-cancel')}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--danger)', background: '#fff', color: 'var(--danger)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+                >
+                  <X size={11} /> Cancel job
+                </button>
+              )}
+              {statusAction === 'idle' && selected.job.status !== 'complete' && selected.job.status !== 'cancelled' && (
+                <button
+                  onClick={() => setStatusAction('confirming-complete')}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+                >
+                  <CheckCircle2 size={11} /> Mark complete
+                </button>
+              )}
             </div>
+
+            {confirmEveryoneState === 'confirming' && (
+              <div style={{ border: '1px solid var(--danger)', background: 'var(--danger-bg)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>
+                  Confirm all {pendingBookings.length} pencilled/offered {pendingBookings.length === 1 ? 'booking' : 'bookings'} on this job? Each person will get a real confirmation email.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => setConfirmEveryoneState('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmEveryoneNow}
+                    style={{ border: 'none', background: 'var(--danger)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+                  >
+                    Yes, confirm all
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {statusAction === 'confirming-cancel' && (
+              <div style={{ border: '1px solid var(--danger)', background: 'var(--danger-bg)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>Cancel this job? It'll stay visible on the Jobs list, tagged Cancelled.</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => setStatusAction('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+                    Never mind
+                  </button>
+                  <button
+                    onClick={() => setJobStatus(selected.job.id, 'cancelled')}
+                    style={{ border: 'none', background: 'var(--danger)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+                  >
+                    Yes, cancel job
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {statusAction === 'confirming-complete' && (
+              <div style={{ border: '1px solid var(--line)', background: 'var(--surface)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>Mark this job Complete? It'll move to Archive and drop off the active Jobs list.</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => setStatusAction('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+                    Never mind
+                  </button>
+                  <button
+                    onClick={() => setJobStatus(selected.job.id, 'complete')}
+                    style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+                  >
+                    Yes, mark complete
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 32, marginTop: 8, borderBottom: '1px solid var(--line)', paddingBottom: 4 }}>
+              <InfoRow icon={CalendarDays} label="Dates" value={`${formatDate(selected.job.start_date)} – ${formatDate(selected.job.end_date)}`} />
+              <InfoRow icon={MapPin} label="Venue" value={venueName ?? 'Not set'} />
+              <InfoRow icon={Phone} label="Production contact" value={primaryContact ? `${primaryContact.name}${primaryContact.phone ? ' · ' + primaryContact.phone : ''}` : 'Not yet assigned'} />
+              {/* Only shown for Jobs actually linked to a shared Core Job (i.e.
+                  fetched from Monday) — hand-created Jobs have no order_number
+                  to show, per testing feedback item C. */}
+              {selected.job.shared_job_id && selected.job.order_number && <InfoRow icon={LinkIcon} label="Monday ref" value={selected.job.order_number} />}
+            </div>
+          </>
+        ) : (
+          // Testing feedback: "Edit" used to open a completely separate
+          // form, hiding Crewing by role/Add role/Assign a vehicle below
+          // it and confusing people into thinking those lived elsewhere.
+          // Same JobCreateForm, same fields, same save/cancel behaviour —
+          // just rendered inline (embedded) in this panel instead of
+          // replacing it, so the rest of the panel stays exactly where it
+          // was the whole time this is open.
+          <div style={{ marginTop: 10, marginBottom: 20, maxWidth: 640 }}>
+            <JobCreateForm
+              key={selected.job.id}
+              clients={Object.values(clients)}
+              projects={projects}
+              venues={venuesList}
+              roles={roles}
+              editingJob={selected.job}
+              embedded
+              onCancel={() => setEditing(false)}
+              onCreated={finishEditing}
+            />
           </div>
         )}
-
-        {statusAction === 'confirming-cancel' && (
-          <div style={{ border: '1px solid var(--danger)', background: 'var(--danger-bg)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-            <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>Cancel this job? It'll stay visible on the Jobs list, tagged Cancelled.</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => setStatusAction('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
-                Never mind
-              </button>
-              <button
-                onClick={() => setJobStatus(selected.job.id, 'cancelled')}
-                style={{ border: 'none', background: 'var(--danger)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-              >
-                Yes, cancel job
-              </button>
-            </div>
-          </div>
-        )}
-
-        {statusAction === 'confirming-complete' && (
-          <div style={{ border: '1px solid var(--line)', background: 'var(--surface)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-            <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>Mark this job Complete? It'll move to Archive and drop off the active Jobs list.</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => setStatusAction('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
-                Never mind
-              </button>
-              <button
-                onClick={() => setJobStatus(selected.job.id, 'complete')}
-                style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-              >
-                Yes, mark complete
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div style={{ display: 'flex', gap: 32, marginTop: 8, borderBottom: '1px solid var(--line)', paddingBottom: 4 }}>
-          <InfoRow icon={CalendarDays} label="Dates" value={`${formatDate(selected.job.start_date)} – ${formatDate(selected.job.end_date)}`} />
-          <InfoRow icon={MapPin} label="Venue" value={venueName ?? 'Not set'} />
-          <InfoRow icon={Phone} label="Production contact" value={primaryContact ? `${primaryContact.name}${primaryContact.phone ? ' · ' + primaryContact.phone : ''}` : 'Not yet assigned'} />
-          {/* Only shown for Jobs actually linked to a shared Core Job (i.e.
-              fetched from Monday) — hand-created Jobs have no order_number
-              to show, per testing feedback item C. */}
-          {selected.job.shared_job_id && selected.job.order_number && <InfoRow icon={LinkIcon} label="Monday ref" value={selected.job.order_number} />}
-        </div>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '24px 0 12px' }}>
           <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)' }}>Crewing by role</span>
