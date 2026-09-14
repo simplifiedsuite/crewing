@@ -30,6 +30,8 @@ import {
   Pencil,
   UserX,
   KeyRound,
+  Link as LinkIcon,
+  Copy,
 } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { useStaffAuth } from '../../context/StaffAuthContext'
@@ -4292,11 +4294,122 @@ function SkillsSection({ skills, reload }: { skills: Skill[]; reload: () => void
   )
 }
 
-type SettingsTabKey = 'roles' | 'overtime' | 'skills'
+// DakboardFeedSection — the org-wide "Booked jobs" feed for an internal
+// Dakboard display. Deliberately not personalised: one shared link for
+// the whole organisation, generated on first view here (never
+// proactively) and invalidated only by an explicit regenerate — same
+// token semantics as the crew's own per-person feed, just scoped to the
+// org instead of a Person. See internal/handlers/calendar_feed.go.
+function DakboardFeedSection() {
+  const [feedUrl, setFeedUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [regenerating, setRegenerating] = useState(false)
+  const [confirmingRegenerate, setConfirmingRegenerate] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    api
+      .get<{ feed_url: string }>('/dakboard-feed')
+      .then((res) => setFeedUrl(res.feed_url))
+      .finally(() => setLoading(false))
+  }, [])
+
+  async function copy() {
+    if (!feedUrl) return
+    try {
+      await navigator.clipboard.writeText(feedUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API unavailable — the URL is still visible/selectable above.
+    }
+  }
+
+  async function regenerate() {
+    setRegenerating(true)
+    try {
+      const res = await api.post<{ feed_url: string }>('/dakboard-feed/regenerate')
+      setFeedUrl(res.feed_url)
+      setConfirmingRegenerate(false)
+    } finally {
+      setRegenerating(false)
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 4 }}>Dakboard feed</div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        One shared link for an internal Dakboard display — not personalised per crew member. It lists every Booked job (firm commitment, not pencilled or cancelled), with only the crew who are individually Confirmed on each one.
+      </div>
+
+      <div style={{ ...settingsRowStyle, flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <LinkIcon size={16} color="var(--primary)" style={{ flexShrink: 0, marginTop: 2 }} />
+          <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink)', lineHeight: 1.4 }}>
+            Add this link as a subscribed calendar on the Dakboard device (or any calendar app used for the same purpose).
+          </div>
+        </div>
+
+        {loading && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>Loading…</div>}
+
+        {!loading && feedUrl && (
+          <>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                readOnly
+                value={feedUrl}
+                onFocus={(e) => e.target.select()}
+                style={{ ...settingsInputStyle, background: 'var(--surface)', color: 'var(--ink-muted)', fontSize: 12.5 }}
+              />
+              <button onClick={copy} style={{ ...settingsCancelButtonStyle, display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                <Copy size={13} /> {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+
+            <div style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)', lineHeight: 1.4 }}>
+              Calendar apps typically poll a link like this every hour or so, not instantly.
+            </div>
+
+            {!confirmingRegenerate ? (
+              <button
+                onClick={() => setConfirmingRegenerate(true)}
+                style={{ ...settingsIconButtonStyle, width: 'fit-content', display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5 }}
+              >
+                <RefreshCw size={13} /> Regenerate link
+              </button>
+            ) : (
+              <div style={{ padding: 12, borderRadius: 10, background: 'var(--danger-bg)' }}>
+                <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--danger)', lineHeight: 1.4 }}>
+                  This immediately stops the current link from working, including on the Dakboard device itself — it'll need the new link entered in its place.
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button onClick={() => setConfirmingRegenerate(false)} style={settingsCancelButtonStyle}>
+                    Cancel
+                  </button>
+                  <button
+                    onClick={regenerate}
+                    disabled={regenerating}
+                    style={{ ...settingsPrimaryButtonStyle, background: 'var(--danger)', opacity: regenerating ? 0.7 : 1 }}
+                  >
+                    {regenerating ? 'Regenerating…' : 'Yes, regenerate'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+type SettingsTabKey = 'roles' | 'overtime' | 'skills' | 'dakboard'
 const SETTINGS_TABS: { key: SettingsTabKey; label: string }[] = [
   { key: 'roles', label: 'Roles' },
   { key: 'overtime', label: 'Overtime rules' },
   { key: 'skills', label: 'Skills' },
+  { key: 'dakboard', label: 'Dakboard feed' },
 ]
 
 function SettingsContent({ roles, reloadRoles }: { roles: Role[]; reloadRoles: () => void }) {
@@ -4307,7 +4420,7 @@ function SettingsContent({ roles, reloadRoles }: { roles: Role[]; reloadRoles: (
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
       <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginBottom: 4 }}>Settings</div>
-      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, and skills.</div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, skills — plus the shared Dakboard feed link.</div>
 
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 20 }}>
         {SETTINGS_TABS.map((t) => (
@@ -4336,6 +4449,7 @@ function SettingsContent({ roles, reloadRoles }: { roles: Role[]; reloadRoles: (
         {tab === 'roles' && <RolesSection roles={roles} reload={reloadRoles} />}
         {tab === 'overtime' && <OvertimeRulesSection rules={overtimeRules} reload={reloadOvertimeRules} />}
         {tab === 'skills' && <SkillsSection skills={skills} reload={reloadSkills} />}
+        {tab === 'dakboard' && <DakboardFeedSection />}
       </div>
     </div>
   )

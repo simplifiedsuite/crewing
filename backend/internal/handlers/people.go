@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -279,28 +280,51 @@ func (a *API) RemovePersonRole(w http.ResponseWriter, r *http.Request) {
 
 // --- Calendar feed token ---
 
-// GenerateCalendarFeedToken issues (or regenerates) a Person's iCal feed
-// token. Regenerating simply overwrites the column — the old URL stops
-// resolving immediately, no separate revocation table, per
-// ralto_schema_addendum_v1.md §2.
-func (a *API) GenerateCalendarFeedToken(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+// issuePersonCalendarFeedToken generates a fresh token and overwrites
+// whatever a Person already had — regenerating and first-time issuing are
+// the same operation here, since overwriting is also how revocation works
+// (no separate revocation table, per ralto_schema_addendum_v1.md §2).
+// Shared by the scheduler-facing GenerateCalendarFeedToken below and the
+// crew-facing endpoints in calendar_feed.go, so both call sites can never
+// drift into two different token formats or write paths.
+func (a *API) issuePersonCalendarFeedToken(ctx context.Context, personID string) (string, error) {
 	token, err := randomToken(24)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate calendar feed token")
-		return
+		return "", err
 	}
-	tag, err := a.DB.Exec(r.Context(), `UPDATE people SET calendar_feed_token = $1, updated_at = now() WHERE id = $2 AND organisation_id = $3`, token, id, currentOrgID)
+	tag, err := a.DB.Exec(ctx, `UPDATE people SET calendar_feed_token = $1, updated_at = now() WHERE id = $2 AND organisation_id = $3`, token, personID, currentOrgID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate calendar feed token")
-		return
+		return "", err
 	}
 	if tag.RowsAffected() == 0 {
+		return "", pgx.ErrNoRows
+	}
+	return token, nil
+}
+
+// personFeedURL renders the public URL for a person's feed token —
+// ICAL_FEED_BASE_URL points at the ical-sidecar's own /feed route (see
+// render.yaml), e.g. https://ralto-ical.onrender.com/feed.
+func personFeedURL(token string) string {
+	return os.Getenv("ICAL_FEED_BASE_URL") + "/" + token + ".ics"
+}
+
+// GenerateCalendarFeedToken issues (or regenerates) a Person's iCal feed
+// token from the scheduler side — e.g. to hand a crew member their link
+// during onboarding. The crew member's own self-service version of this
+// lives in calendar_feed.go.
+func (a *API) GenerateCalendarFeedToken(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	token, err := a.issuePersonCalendarFeedToken(r.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "person not found")
 		return
 	}
-	base := os.Getenv("ICAL_FEED_BASE_URL") // e.g. https://ralto-ical.onrender.com/feed
-	writeJSON(w, http.StatusOK, map[string]string{"token": token, "feed_url": base + "/" + token + ".ics"})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate calendar feed token")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token, "feed_url": personFeedURL(token)})
 }
 
 // --- Crew-app invitation (enables login for an existing Person) ---

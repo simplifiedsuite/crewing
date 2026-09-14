@@ -10,13 +10,18 @@ feed, matching the schema addendum's design:
 
 Two decisions this file settles, that the addendum had left open:
 
-1. TENTATIVE BOOKINGS ARE INCLUDED, not just confirmed ones. Offered/pending
-   bookings appear using iCalendar's own STATUS property (STATUS:TENTATIVE),
-   which every mainstream calendar app already renders distinctly (usually a
-   hatched/dashed event) — so this doesn't need a text hack like a
-   "[Tentative]" prefix. Reasoning: a crew member not seeing a held offer on
-   their personal calendar is more likely to cause a real double-booking
-   than seeing something correctly labelled tentative.
+1. TENTATIVE BOOKINGS ARE INCLUDED, not just confirmed ones — both
+   'offered' and 'pencilled' (see migrations/0004_pencil.sql for that
+   status). Both appear using iCalendar's own STATUS property
+   (STATUS:TENTATIVE), which every mainstream calendar app already renders
+   distinctly (usually a hatched/dashed event) — so this doesn't need a
+   text hack like a "[Tentative]" prefix. Reasoning: a crew member not
+   seeing a held offer on their personal calendar is more likely to cause
+   a real double-booking than seeing something correctly labelled
+   tentative. DESCRIPTION still distinguishes 'pencilled' from 'offered'
+   in words, since the two mean different things (held vs. formally
+   asked) even though a calendar app can only draw one "tentative" style
+   for both.
 
 2. REFRESH INTERVAL is set explicitly via X-PUBLISHED-TTL (and the parallel
    REFRESH-INTERVAL property some clients look for instead), rather than
@@ -37,7 +42,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
@@ -77,6 +82,19 @@ class Person:
     calendar_feed_token: str
 
 
+@dataclass
+class JobSummary:
+    """One row of the org-wide Dakboard feed — a Job, its Confirmed crew,
+    and enough context for a wall display, not a full Job record."""
+
+    id: str
+    name: str
+    start_date: str  # "2026-11-14"
+    end_date: str    # "2026-11-16"
+    location: Optional[str] = None
+    crew: list[str] = field(default_factory=list)  # already-formatted "Name (Role)" strings
+
+
 # ---------------------------------------------------------------------------
 # RFC 5545 helpers
 # ---------------------------------------------------------------------------
@@ -84,6 +102,7 @@ class Person:
 ICS_STATUS = {
     "confirmed": "CONFIRMED",
     "offered": "TENTATIVE",
+    "pencilled": "TENTATIVE",
 }
 
 
@@ -130,6 +149,16 @@ def _dtstamp_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _date_only(date_str: str, plus_days: int = 0) -> str:
+    """Format a bare date (no time component) as YYYYMMDD, for an all-day
+    VEVENT's DTSTART/DTEND;VALUE=DATE. plus_days shifts the date forward —
+    used for DTEND, which RFC 5545 §3.6.1 treats as exclusive for all-day
+    events (a job running start..end DATE-wise needs DTEND = end + 1 day
+    to actually cover its last day on the calendar)."""
+    dt = datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=plus_days)
+    return dt.strftime("%Y%m%d")
+
+
 # ---------------------------------------------------------------------------
 # VEVENT generation — one per BookingShift
 # ---------------------------------------------------------------------------
@@ -148,6 +177,8 @@ def _shift_to_vevent(booking: Booking, shift: BookingShift) -> str:
     description_parts = [f"Client: {booking.client_name}", f"Role: {booking.role}"]
     if booking.status == "offered":
         description_parts.append("Status: offer pending your response — not yet confirmed.")
+    elif booking.status == "pencilled":
+        description_parts.append("Status: pencilled — you're being held for this, not yet formally offered or confirmed.")
     if booking.notes:
         description_parts.append(booking.notes)
     # Escape each part's raw content individually, THEN join with the
@@ -202,6 +233,66 @@ def generate_ics_feed(person: Person, bookings: list[Booking]) -> str:
         # Refresh hints — most calendar apps poll on their own schedule
         # regardless, but this documents the intent and some clients (e.g.
         # some Google Calendar / Outlook versions) do respect it.
+        "X-PUBLISHED-TTL:PT1H",
+        "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
+    ]
+    footer = ["END:VCALENDAR"]
+
+    body = "\r\n".join(header) + "\r\n" + "\r\n".join(vevents) + "\r\n" + "\r\n".join(footer)
+    return body + "\r\n"
+
+
+# ---------------------------------------------------------------------------
+# Org-wide Dakboard feed — deliberately separate from the per-person feed
+# above (own dataclass, own VEVENT shape, own top-level generator). One
+# VEVENT per Job, not per shift: this is a dashboard "what's on" view, not
+# a crew member's own day-by-day schedule, so per-shift call-time detail
+# would be noise here.
+# ---------------------------------------------------------------------------
+
+
+def _job_to_vevent(job: JobSummary) -> str:
+    uid = f"ralto-dakboard-job-{job.id}@ralto.app"
+    dtstamp = _dtstamp_now()
+    dtstart = _date_only(job.start_date)
+    dtend = _date_only(job.end_date, plus_days=1)  # DTEND is exclusive for all-day events
+
+    summary = _escape_text(job.name)
+    description = _escape_text(", ".join(job.crew) if job.crew else "No crew confirmed yet")
+
+    lines = [
+        "BEGIN:VEVENT",
+        f"UID:{uid}",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART;VALUE=DATE:{dtstart}",
+        f"DTEND;VALUE=DATE:{dtend}",
+        f"SUMMARY:{summary}",
+        f"DESCRIPTION:{description}",
+        "STATUS:CONFIRMED",  # only Booked/firm-commitment jobs reach this feed at all
+    ]
+    if job.location:
+        lines.append(f"LOCATION:{_escape_text(job.location)}")
+    lines.append("END:VEVENT")
+    return "\r\n".join(_fold_line(l) for l in lines)
+
+
+def generate_dakboard_ics_feed(jobs: list[JobSummary]) -> str:
+    """Generate the org-wide Dakboard feed: one event per Booked/firm-
+    commitment, non-cancelled Job, description listing only its Confirmed
+    crew. Filtering (commitment/status/booking-status) is the caller's
+    job, same division of responsibility as generate_ics_feed above — this
+    function only renders what it's handed.
+    """
+    vevents = [_job_to_vevent(job) for job in jobs]
+
+    header = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Ralto//Dakboard Jobs Feed//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:Ralto — Booked jobs",
+        "X-WR-TIMEZONE:Europe/London",
         "X-PUBLISHED-TTL:PT1H",
         "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
     ]

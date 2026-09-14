@@ -133,6 +133,12 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Delete("/{id}", api.DeleteOvertimeRule)
 		})
 
+		// Org-wide Dakboard feed (Settings) — separate from crew's own
+		// per-person feed under /api/crew/calendar-feed. See
+		// internal/handlers/calendar_feed.go.
+		r.Get("/dakboard-feed", api.GetDakboardFeed)
+		r.Post("/dakboard-feed/regenerate", api.RegenerateDakboardFeed)
+
 		r.Route("/bookings", func(r chi.Router) {
 			r.Put("/{id}", api.UpdateBooking)
 			r.Delete("/{id}", api.DeleteBooking)

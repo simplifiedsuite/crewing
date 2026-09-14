@@ -2,12 +2,16 @@
 Ralto iCal sidecar
 ==================
 
-A thin FastAPI wrapper around ical_feed.py (copied unmodified from the
-Ralto prototype files — it's already written, tested, and had a real bug
-fixed, so it's treated as correct and not touched here). This file's only
-job is: look up a Person by their calendar_feed_token, pull their
-confirmed + offered bookings/shifts from Postgres, and hand them to
-generate_ics_feed.
+A thin FastAPI wrapper around ical_feed.py. Serves two genuinely separate
+feeds, sharing only this file's DB-connection plumbing and ical_feed.py's
+low-level RFC 5545 helpers — getting one has no effect on and exposes
+nothing about the other:
+
+- /feed/{token}.ics — one crew member's own confirmed/offered/pencilled
+  bookings, looked up by their personal Person.calendar_feed_token.
+- /feed/dakboard/{token}.ics — the org-wide "what's booked" view, looked
+  up by the shared org_settings.dakboard_feed_token, for an internal
+  Dakboard display rather than any one person.
 
 Deployed as its own Render service (see ../render.yaml) rather than folded
 into the Go API — see ralto_backend_scaffold_plan.md §4 for why iCal stays
@@ -21,7 +25,7 @@ import psycopg2.extras
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 
-from ical_feed import Booking, BookingShift, Person, generate_ics_feed
+from ical_feed import Booking, BookingShift, JobSummary, Person, generate_dakboard_ics_feed, generate_ics_feed
 
 app = FastAPI()
 
@@ -52,10 +56,12 @@ def feed(token: str):
                 raise HTTPException(status_code=404, detail="Unknown or revoked calendar feed token")
             person = Person(id=person_row["id"], name=person_row["name"], calendar_feed_token=token)
 
-            # Confirmed and offered (tentative) bookings only — declined and
+            # Confirmed, offered, and pencilled bookings — declined and
             # cancelled are never useful on a personal calendar. Per the
-            # schema addendum's open question, this feed shows tentative
-            # bookings too (STATUS:TENTATIVE), not confirmed-only.
+            # schema addendum's open question (resolved): this feed shows
+            # both flavours of tentative booking, not confirmed-only, each
+            # rendered with STATUS:TENTATIVE (see ical_feed.py's module
+            # docstring for why that beats a text-prefix hack).
             cur.execute(
                 """
                 SELECT b.id, b.status, b.notes,
@@ -65,7 +71,7 @@ def feed(token: str):
                 JOIN jobs j ON j.id = jr.job_id
                 JOIN clients c ON c.id = j.client_id
                 JOIN roles ro ON ro.id = jr.role_id
-                WHERE b.person_id = %s AND b.status IN ('confirmed', 'offered')
+                WHERE b.person_id = %s AND b.status IN ('confirmed', 'offered', 'pencilled')
                 """,
                 (person_row["id"],),
             )
@@ -120,4 +126,80 @@ def feed(token: str):
         content=ics,
         media_type="text/calendar; charset=utf-8",
         headers={"Content-Disposition": f'inline; filename="ralto-{token}.ics"'},
+    )
+
+
+@app.get("/feed/dakboard/{token}.ics")
+def dakboard_feed(token: str):
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT organisation_id FROM org_settings WHERE dakboard_feed_token = %s",
+                (token,),
+            )
+            org_row = cur.fetchone()
+            if not org_row:
+                raise HTTPException(status_code=404, detail="Unknown or revoked dakboard feed token")
+            organisation_id = org_row["organisation_id"]
+
+            # Booked/firm-commitment, non-cancelled Jobs only. commitment is
+            # the job-level commercial-certainty flag (migrations/0004_pencil.sql)
+            # — deliberately not a check that every crew slot on the job is
+            # individually Confirmed; that distinction is applied per-job
+            # below, on the crew list only.
+            cur.execute(
+                """
+                SELECT j.id, j.name, j.start_date, j.end_date,
+                       v.name AS venue_name, v.city AS venue_city
+                FROM jobs j
+                LEFT JOIN venues v ON v.id = j.venue_id
+                WHERE j.organisation_id = %s AND j.commitment = 'firm' AND j.status != 'cancelled'
+                ORDER BY j.start_date
+                """,
+                (organisation_id,),
+            )
+            job_rows = cur.fetchall()
+
+            jobs = []
+            for row in job_rows:
+                # Only crew individually Confirmed on this job — Offered or
+                # pencilled crew are left out, even though the job itself
+                # already qualifies as "Booked" at the job level.
+                cur.execute(
+                    """
+                    SELECT p.first_name || ' ' || p.last_name AS name, ro.name AS role
+                    FROM bookings b
+                    JOIN job_requirements jr ON jr.id = b.job_requirement_id
+                    JOIN people p ON p.id = b.person_id
+                    JOIN roles ro ON ro.id = jr.role_id
+                    WHERE jr.job_id = %s AND b.status = 'confirmed'
+                    ORDER BY ro.name, p.first_name
+                    """,
+                    (row["id"],),
+                )
+                crew_rows = cur.fetchall()
+
+                location = row["venue_name"]
+                if location and row["venue_city"]:
+                    location = f'{location}, {row["venue_city"]}'
+
+                jobs.append(
+                    JobSummary(
+                        id=str(row["id"]),
+                        name=row["name"],
+                        start_date=str(row["start_date"]),
+                        end_date=str(row["end_date"]),
+                        location=location,
+                        crew=[f'{c["name"]} ({c["role"]})' for c in crew_rows],
+                    )
+                )
+    finally:
+        conn.close()
+
+    ics = generate_dakboard_ics_feed(jobs)
+    return PlainTextResponse(
+        content=ics,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="ralto-dakboard-{token}.ics"'},
     )

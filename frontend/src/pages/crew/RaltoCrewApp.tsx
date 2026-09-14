@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Home as HomeIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight } from 'lucide-react'
+import { Home as HomeIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight, Link as LinkIcon, Copy, RefreshCw } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { formatTime } from '../../lib/format'
 import { useCrewAuth } from '../../context/CrewAuthContext'
@@ -478,6 +478,123 @@ function ProfileEditForm({ person, onCancel, onSaved }: { person: Person; onCanc
   )
 }
 
+// CalendarFeedSection — the crew-facing side of the personal iCal feed
+// (ralto_schema_addendum_v1.md §2). GET triggers server-side generation on
+// first view (never proactive), so there's nothing to create client-side
+// here — just fetch-and-show, copy, and an explicit, clearly-warned
+// regenerate.
+function CalendarFeedSection() {
+  const [feedUrl, setFeedUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [regenerating, setRegenerating] = useState(false)
+  const [confirmingRegenerate, setConfirmingRegenerate] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    api
+      .get<{ feed_url: string }>('/crew/calendar-feed')
+      .then((res) => setFeedUrl(res.feed_url))
+      .finally(() => setLoading(false))
+  }, [])
+
+  async function copy() {
+    if (!feedUrl) return
+    try {
+      await navigator.clipboard.writeText(feedUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API unavailable (e.g. no secure context) — the URL is
+      // still visible and selectable in the input above, nothing else to do.
+    }
+  }
+
+  async function regenerate() {
+    setRegenerating(true)
+    try {
+      const res = await api.post<{ feed_url: string }>('/crew/calendar-feed/regenerate')
+      setFeedUrl(res.feed_url)
+      setConfirmingRegenerate(false)
+    } finally {
+      setRegenerating(false)
+    }
+  }
+
+  return (
+    <>
+      <SectionLabelInline>Calendar feed</SectionLabelInline>
+      <div style={{ border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: 16 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--tint)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <LinkIcon size={16} color="var(--primary)" />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: 'var(--font-body)', fontSize: 14.5, color: 'var(--ink)', fontWeight: 600 }}>Subscribe to your bookings</div>
+            <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 3, lineHeight: 1.4 }}>
+              Add this link to your phone or computer's calendar app to see your jobs alongside everything else. Confirmed jobs show normally; offered or pencilled jobs show as "tentative" so you can tell them apart.
+            </div>
+          </div>
+        </div>
+
+        {loading && <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 14 }}>Loading…</div>}
+
+        {!loading && feedUrl && (
+          <>
+            <div style={{ marginTop: 14, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                readOnly
+                value={feedUrl}
+                onFocus={(e) => e.target.select()}
+                style={{ flex: 1, minWidth: 0, border: '1px solid var(--line)', borderRadius: 8, padding: '9px 10px', fontFamily: 'var(--font-body)', fontSize: 12.5, color: 'var(--ink-muted)', background: 'var(--tint)' }}
+              />
+              <button
+                onClick={copy}
+                style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5, border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '9px 12px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)', cursor: 'pointer' }}
+              >
+                <Copy size={13} /> {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+
+            <div style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 10, lineHeight: 1.4 }}>
+              Calendar apps usually check a link like this every hour or so, not instantly — a same-day schedule change may take a little while to show up.
+            </div>
+
+            {!confirmingRegenerate ? (
+              <button
+                onClick={() => setConfirmingRegenerate(true)}
+                style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', padding: 0, fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink-muted)', cursor: 'pointer' }}
+              >
+                <RefreshCw size={12} /> Regenerate link
+              </button>
+            ) : (
+              <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: 'var(--danger-bg)' }}>
+                <div style={{ fontFamily: 'var(--font-body)', fontSize: 12.5, color: 'var(--danger)', lineHeight: 1.4 }}>
+                  This immediately stops the current link from working — anywhere you've already subscribed will stop updating, and you'll need to re-subscribe with the new one.
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    onClick={() => setConfirmingRegenerate(false)}
+                    style={{ flex: 1, background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 0', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={regenerate}
+                    disabled={regenerating}
+                    style={{ flex: 1, background: 'var(--danger)', border: 'none', borderRadius: 8, padding: '8px 0', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 13, color: '#fff', cursor: 'pointer', opacity: regenerating ? 0.7 : 1 }}
+                  >
+                    {regenerating ? 'Regenerating…' : 'Yes, regenerate'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </>
+  )
+}
+
 function ProfileScreen() {
   const { person, logout, updatePerson } = useCrewAuth()
   const [documents, setDocuments] = useState<PersonDocument[]>([])
@@ -538,6 +655,8 @@ function ProfileScreen() {
           </div>
         ))}
       </div>
+
+      <CalendarFeedSection />
 
       <button
         onClick={logout}

@@ -32,5 +32,10 @@ func registerCrewRoutes(r chi.Router, api *handlers.API) {
 		r.Post("/availability-requests/{id}/respond", api.RespondToAvailabilityRequest)
 
 		r.Get("/documents", api.ListMyDocuments)
+
+		// Personal iCal feed — see ralto_schema_addendum_v1.md §2 and
+		// internal/handlers/calendar_feed.go.
+		r.Get("/calendar-feed", api.GetMyCalendarFeed)
+		r.Post("/calendar-feed/regenerate", api.RegenerateMyCalendarFeed)
 	})
 }
