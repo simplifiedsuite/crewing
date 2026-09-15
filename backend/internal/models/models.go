@@ -46,15 +46,19 @@ type Client struct {
 // --- Venue ---
 
 type Venue struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Address   *string   `json:"address,omitempty"`
-	City      *string   `json:"city,omitempty"`
-	Country   *string   `json:"country,omitempty"`
-	Timezone  string    `json:"timezone"`
-	Notes     *string   `json:"notes,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Address  *string `json:"address,omitempty"`
+	City     *string `json:"city,omitempty"`
+	Country  *string `json:"country,omitempty"`
+	Timezone string  `json:"timezone"`
+	Notes    *string `json:"notes,omitempty"`
+	// CoreLocationID links this Venue to Core's own Location entity — see
+	// migrations/0015. Nil for the handful of legacy local-only rows that
+	// predate this link and are still referenced by real Jobs.
+	CoreLocationID *string   `json:"core_location_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // --- Project (Ralto-local grouping of Jobs — not the suite-core Project) ---

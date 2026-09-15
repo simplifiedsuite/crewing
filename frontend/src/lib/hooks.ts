@@ -10,6 +10,7 @@ import type {
   CoreClient,
   CoreContract,
   CoreJob,
+  CoreLocation,
   EmploymentType,
   Job,
   JobCommitment,
@@ -269,6 +270,24 @@ export function listCoreContracts(clientId: string) {
   return api.get<CoreContract[]>(`/core-contracts?client_id=${encodeURIComponent(clientId)}`)
 }
 
+// Testing feedback item J: venue/location sync was never actually built —
+// the local `venues` table was stale seed data disconnected from Core.
+// This trio mirrors the Core Client one above exactly, bringing venue
+// picking up to the same "pickers always go live" standard.
+export function listCoreLocations() {
+  return api.get<CoreLocation[]>('/core-locations')
+}
+
+export function createCoreLocation(input: { name: string; address?: string | null; timezone?: string | null }) {
+  return api.post<CoreLocation>('/core-locations', input)
+}
+
+// Finds or creates the local Ralto venue mirror for a confirmed Core
+// Location — idempotent, see LinkCoreVenue's own comment server-side.
+export function linkCoreVenue(input: { core_location_id: string; name: string; address?: string | null; timezone?: string | null }) {
+  return api.post<Venue>('/venues/link-core', input)
+}
+
 // --- Shared Core Job entity — one Monday fetch, visible from every
 // product. See Core's own migrations/0008_jobs.sql.
 
@@ -442,6 +461,22 @@ export function listBookingsForRequirement(requirementId: string) {
 
 export function cancelBooking(id: string) {
   return api.post<Booking>(`/bookings/${id}/cancel`)
+}
+
+// updateBookingDays — testing feedback item L's "edit which specific days
+// this booking covers" action. UpdateBooking's request shape requires the
+// booking's own current start_date/end_date/etc alongside the new `days`
+// (the backend replaces the whole row, not a partial patch), so callers
+// pass the booking they already have on hand rather than re-fetching it.
+export function updateBookingDays(booking: Booking, days: string[]) {
+  return api.put<Booking>(`/bookings/${booking.id}`, {
+    start_date: booking.start_date,
+    end_date: booking.end_date,
+    call_time: booking.call_time ?? null,
+    rate_override: booking.rate_override ?? null,
+    notes: booking.notes ?? null,
+    days,
+  })
 }
 
 export function confirmBooking(id: string) {

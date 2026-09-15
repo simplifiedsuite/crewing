@@ -64,13 +64,22 @@ type bookingWithPersonResponse struct {
 	models.Booking
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	// ShiftDates — testing feedback item L — is this booking's actual
+	// booking_shifts day coverage (YYYY-MM-DD, ascending), read alongside
+	// the booking itself so Jobs/Planner can show which specific days a
+	// person covers without a second round trip per booking. Empty for a
+	// booking created before this feature existed and never since
+	// updated — the frontend treats that the same as full coverage rather
+	// than showing a false "0 days" warning (see JobRoleRow/BookedPersonRow).
+	ShiftDates []string `json:"shift_dates"`
 }
 
 func (a *API) ListBookingsForRequirement(w http.ResponseWriter, r *http.Request) {
 	reqID := chi.URLParam(r, "reqId")
 	rows, err := a.DB.Query(r.Context(),
 		`SELECT b.id, b.job_requirement_id, b.person_id, b.status, b.start_date, b.end_date, b.call_time, b.rate_override,
-		        b.offered_at, b.responded_at, b.confirmed_at, b.notes, p.first_name, p.last_name
+		        b.offered_at, b.responded_at, b.confirmed_at, b.notes, p.first_name, p.last_name,
+		        COALESCE((SELECT array_agg(to_char(bs.date, 'YYYY-MM-DD') ORDER BY bs.date) FROM booking_shifts bs WHERE bs.booking_id = b.id), '{}')
 		 FROM bookings b
 		 JOIN people p ON p.id = b.person_id
 		 WHERE b.job_requirement_id = $1 AND b.status NOT IN ('cancelled', 'declined') AND b.organisation_id = $2
@@ -85,7 +94,7 @@ func (a *API) ListBookingsForRequirement(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var b bookingWithPersonResponse
 		if err := rows.Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
-			&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes, &b.FirstName, &b.LastName); err != nil {
+			&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes, &b.FirstName, &b.LastName, &b.ShiftDates); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list bookings")
 			return
 		}
@@ -102,6 +111,10 @@ type createBookingRequest struct {
 	RateOverride *float64             `json:"rate_override"`
 	Notes        *string              `json:"notes"`
 	Status       models.BookingStatus `json:"status"`
+	// Days — testing feedback item L: which specific dates within
+	// [StartDate, EndDate] this booking covers. Omitted/empty defaults to
+	// every day in the range — see resolveShiftDays in booking_shifts.go.
+	Days []string `json:"days,omitempty"`
 }
 
 // CreateBooking is the "Offer" (or, per addendum v2 §4, "Pencil") action
@@ -129,6 +142,11 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Status != models.BookingStatusOffered && req.Status != models.BookingStatusPencilled && req.Status != models.BookingStatusDeclined {
 		writeError(w, http.StatusBadRequest, "a new booking must start as pencilled, offered, or declined")
+		return
+	}
+	shiftDays, err := resolveShiftDays(req.StartDate, req.EndDate, req.Days)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -159,7 +177,7 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 	// said no, or already worked it), not the same live hold being
 	// re-touched.
 	var existingID string
-	err := a.DB.QueryRow(r.Context(),
+	err = a.DB.QueryRow(r.Context(),
 		`SELECT id FROM bookings WHERE job_requirement_id = $1 AND person_id = $2 AND status IN ('pencilled', 'offered') AND organisation_id = $3`,
 		reqID, req.PersonID, currentOrgID,
 	).Scan(&existingID)
@@ -196,6 +214,14 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create booking")
 		return
+	}
+
+	// Best-effort, like the notification below: the booking itself is
+	// already committed, so a shift-sync failure (day-coverage detail)
+	// shouldn't fail the whole request — it's logged and the booking
+	// still comes back created/updated.
+	if err := a.syncBookingShifts(r.Context(), b.ID, shiftDays, b.CallTime); err != nil {
+		log.Printf("create booking: syncing booking shifts: %v", err)
 	}
 
 	if b.Status == models.BookingStatusOffered {
@@ -248,6 +274,10 @@ type updateBookingRequest struct {
 	CallTime     *string  `json:"call_time"`
 	RateOverride *float64 `json:"rate_override"`
 	Notes        *string  `json:"notes"`
+	// Days — see createBookingRequest.Days. Also used on its own (dates/
+	// call time/etc unchanged) as the "edit which days this booking
+	// covers" action — see UpdateBooking.
+	Days []string `json:"days,omitempty"`
 }
 
 // UpdateBooking covers call-time/date/venue-adjacent edits to an existing
@@ -262,6 +292,11 @@ func (a *API) UpdateBooking(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	shiftDays, err := resolveShiftDays(req.StartDate, req.EndDate, req.Days)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	var previousCallTime *string
 	var status models.BookingStatus
@@ -274,7 +309,7 @@ func (a *API) UpdateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var b models.Booking
-	err := a.DB.QueryRow(r.Context(),
+	err = a.DB.QueryRow(r.Context(),
 		`UPDATE bookings SET start_date = $1, end_date = $2, call_time = $3, rate_override = $4, notes = $5
 		 WHERE id = $6 AND organisation_id = $7
 		 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
@@ -284,6 +319,10 @@ func (a *API) UpdateBooking(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to update booking")
 		return
+	}
+
+	if err := a.syncBookingShifts(r.Context(), b.ID, shiftDays, b.CallTime); err != nil {
+		log.Printf("update booking: syncing booking shifts: %v", err)
 	}
 
 	callTimeChanged := (previousCallTime == nil) != (req.CallTime == nil) ||

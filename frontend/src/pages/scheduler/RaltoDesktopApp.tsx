@@ -33,6 +33,7 @@ import {
   Link as LinkIcon,
   Copy,
   Archive as ArchiveIcon,
+  CalendarCheck2,
 } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { useStaffAuth } from '../../context/StaffAuthContext'
@@ -67,6 +68,9 @@ import {
   listCoreClients,
   createCoreClient,
   linkCoreClient,
+  listCoreLocations,
+  createCoreLocation,
+  linkCoreVenue,
   listCoreContracts,
   getCoreJobByOrderNumber,
   createCoreJob,
@@ -76,6 +80,8 @@ import {
   offerBooking,
   cancelBooking,
   confirmBooking,
+  updateBookingDays,
+  useBookingsForRequirement,
   listBookingsForRequirement,
   createPerson,
   updatePerson,
@@ -117,6 +123,7 @@ import type {
   CoreClient,
   CoreContract,
   CoreJob,
+  CoreLocation,
   EmploymentType,
   Job,
   JobCommitment,
@@ -993,7 +1000,15 @@ function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summ
   return (
     <button
       onClick={() => onOpen(summary.job.id)}
-      style={{ position: 'relative', width: '100%', textAlign: 'left', background: selected ? 'var(--primary-tint)' : '#fff', border: selected ? '1px solid var(--primary-soft)' : '1px solid var(--line)', borderRadius: 12, padding: '12px 14px 12px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, overflow: 'hidden' }}
+      // Testing feedback item K: flex items default to flex-shrink: 1, and
+      // a row here has overflow:hidden — once the list's natural total
+      // height (26+ rows) exceeds the scroll container's visible height,
+      // flexbox was shrinking every row below its own content's height
+      // instead of letting the container actually scroll past them,
+      // collapsing the name/tag line and the date line into each other.
+      // flexShrink: 0 makes each row keep its natural content height, so
+      // the container scrolls instead of squeezing rows.
+      style={{ position: 'relative', width: '100%', textAlign: 'left', background: selected ? 'var(--primary-tint)' : '#fff', border: selected ? '1px solid var(--primary-soft)' : '1px solid var(--line)', borderRadius: 12, padding: '12px 14px 12px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, overflow: 'hidden', flexShrink: 0 }}
     >
       <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientColor(client, fallbackIndex), opacity: quiet ? 0.6 : 1 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -1058,7 +1073,139 @@ const BOOKING_STATUS_ICON: Partial<Record<BookingStatus, { Icon: typeof CheckCir
   pencilled: { Icon: Pencil, color: 'var(--primary-soft)' },
 }
 
-function BookedPersonRow({ booking, onConfirm, onCancel }: { booking: Booking; onConfirm: () => void; onCancel: () => void }) {
+// Every date from start_date to end_date inclusive, "YYYY-MM-DD" — the
+// frontend twin of the backend's own expandDateRange (booking_shifts.go),
+// used to know a booking's full day count and to build the day-picker.
+function expandDateRangeClient(start: string, end: string): string[] {
+  const days: string[] = []
+  let d = new Date(start + 'T00:00:00')
+  const last = new Date(end + 'T00:00:00')
+  while (d <= last) {
+    days.push(d.toISOString().slice(0, 10))
+    d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
+  }
+  return days
+}
+
+// BookingDaysBadge — testing feedback item L: which specific day(s) within
+// a multi-day Job someone is booked for. A click-to-edit badge, shared
+// between Jobs' BookedPersonRow and Planner's booked-people list. An empty
+// shift_dates (a booking created before this feature shipped, never since
+// updated) is treated the same as full coverage rather than a false "0 of
+// N days" warning — see bookingWithPersonResponse's own comment server-side.
+function BookingDaysBadge({ booking, onUpdated }: { booking: Booking; onUpdated: () => void }) {
+  const fullDays = useMemo(() => expandDateRangeClient(booking.start_date, booking.end_date), [booking.start_date, booking.end_date])
+  const covered = booking.shift_dates && booking.shift_dates.length > 0 ? booking.shift_dates : fullDays
+  const isPartial = covered.length < fullDays.length
+
+  const [editing, setEditing] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set(covered))
+  const [saving, setSaving] = useState(false)
+
+  if (fullDays.length <= 1) return null
+
+  function startEditing() {
+    setSelected(new Set(covered))
+    setEditing(true)
+  }
+
+  async function save() {
+    if (selected.size === 0) return
+    setSaving(true)
+    try {
+      await updateBookingDays(booking, Array.from(selected).sort())
+      setEditing(false)
+      onUpdated()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={startEditing}
+        title={isPartial ? `Covers ${covered.length} of ${fullDays.length} days — click to change` : 'Covers every day of this booking — click to change'}
+        style={{ display: 'flex', alignItems: 'center', gap: 3, border: 'none', background: 'none', cursor: 'pointer', padding: 0, fontFamily: 'var(--font)', fontSize: 11, fontWeight: 600, color: isPartial ? 'var(--attention)' : 'var(--ink-muted)' }}
+      >
+        <CalendarCheck2 size={11} />
+        {isPartial ? `${covered.length}/${fullDays.length} days` : 'All days'}
+      </button>
+    )
+  }
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        zIndex: 5,
+        right: 0,
+        top: '100%',
+        marginTop: 4,
+        border: '1px solid var(--line)',
+        background: '#fff',
+        borderRadius: 8,
+        padding: 10,
+        boxShadow: '0 4px 16px rgba(0,0,0,0.14)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        minWidth: 150,
+      }}
+    >
+      <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, color: 'var(--ink)' }}>Days covered</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+        {fullDays.map((day) => (
+          <label key={day} style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={selected.has(day)}
+              onChange={(e) =>
+                setSelected((prev) => {
+                  const next = new Set(prev)
+                  if (e.target.checked) next.add(day)
+                  else next.delete(day)
+                  return next
+                })
+              }
+            />
+            {formatDate(day)}
+          </label>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          style={{ flex: 1, border: '1px solid var(--line)', background: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', color: 'var(--ink-muted)' }}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving || selected.size === 0}
+          style={{ flex: 1, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', opacity: saving || selected.size === 0 ? 0.6 : 1 }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function BookedPersonRow({
+  booking,
+  onConfirm,
+  onCancel,
+  onDaysUpdated,
+}: {
+  booking: Booking
+  onConfirm: () => void
+  onCancel: () => void
+  onDaysUpdated: () => void
+}) {
   const meta = BOOKING_STATUS_ICON[booking.status] ?? BOOKING_STATUS_ICON.offered!
   const Icon = meta.Icon
   // Confirm is only a legal transition from pencilled/offered — same guard
@@ -1068,14 +1215,15 @@ function BookedPersonRow({ booking, onConfirm, onCancel }: { booking: Booking; o
   // confirmed or declined booking if asked to.
   const canConfirm = booking.status === 'pencilled' || booking.status === 'offered'
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '4px 0' }}>
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '4px 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
         <Icon size={13} color={meta.color} strokeWidth={2.5} />
         <span style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {booking.first_name} {booking.last_name}
         </span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <BookingDaysBadge booking={booking} onUpdated={onDaysUpdated} />
         {canConfirm && (
           <button
             onClick={onConfirm}
@@ -1110,6 +1258,7 @@ function JobRoleRow({
   onOpenInPlanner,
   onConfirmBooking,
   onCancelBooking,
+  onDaysUpdated,
   onDeleteRequirement,
 }: {
   req: JobRequirementWithCounts
@@ -1117,6 +1266,7 @@ function JobRoleRow({
   onOpenInPlanner: (req: JobRequirementWithCounts) => void
   onConfirmBooking: (bookingId: string) => void
   onCancelBooking: (bookingId: string) => void
+  onDaysUpdated: () => void
   // Testing feedback item F: there was previously no way to remove a
   // whole role requirement, only individual people booked against it.
   onDeleteRequirement: (req: JobRequirementWithCounts) => void
@@ -1157,7 +1307,7 @@ function JobRoleRow({
       {bookings.length > 0 && (
         <div style={{ borderTop: '1px solid var(--line)', paddingTop: 6, display: 'flex', flexDirection: 'column' }}>
           {bookings.map((b) => (
-            <BookedPersonRow key={b.id} booking={b} onConfirm={() => onConfirmBooking(b.id)} onCancel={() => onCancelBooking(b.id)} />
+            <BookedPersonRow key={b.id} booking={b} onConfirm={() => onConfirmBooking(b.id)} onCancel={() => onCancelBooking(b.id)} onDaysUpdated={onDaysUpdated} />
           ))}
         </div>
       )}
@@ -1573,9 +1723,19 @@ function JobCreateForm({
   const [clientId, setClientId] = useState(editingJob?.client_id ?? prefill?.client_id ?? '')
   const [projectId, setProjectId] = useState(editingJob?.project_id ?? '')
   const [venueId, setVenueId] = useState(editingJob?.venue_id ?? '')
+  const [venueSelectValue, setVenueSelectValue] = useState(editingJob?.venue_id ?? '')
+  // Testing feedback item J — live Core Locations, same "pickers always go
+  // live" pattern as ClientMatchPanel/ContractPicker. Selecting one calls
+  // linkCoreVenue to resolve/create the local mirror row venue_id needs.
+  const [coreLocations, setCoreLocations] = useState<CoreLocation[]>([])
+  const [coreLocationsError, setCoreLocationsError] = useState<string | undefined>(undefined)
+  const [venueLinking, setVenueLinking] = useState(false)
   // Testing feedback item C — inline "create a new venue" state, same
   // create-then-select shape as the Monday-fetch Client flow's
-  // matchedLocalClient (see clientOptions below).
+  // matchedLocalClient (see clientOptions below). Item J upgraded this to
+  // create in Core first (so it's visible to other products too), falling
+  // back to the local-only path if Core's owner-gated /locations rejects
+  // a non-owner scheduler (see saveNewVenue).
   const [addingVenue, setAddingVenue] = useState(false)
   const [newVenueName, setNewVenueName] = useState('')
   const [newVenueCity, setNewVenueCity] = useState('')
@@ -1692,11 +1852,72 @@ function JobCreateForm({
     return [...clients, matchedLocalClient]
   }, [clients, matchedLocalClient])
 
-  // Same shape as clientOptions, for a venue just created inline (item C).
+  // Testing feedback item J: live per §5a's picker rule, same pattern as
+  // ClientMatchPanel/ContractPicker. Core's /api/locations group is
+  // entirely RequireOwner-gated (unlike /api/clients), so a non-owner
+  // scheduler's session gets a 403 here — that's surfaced as a message,
+  // and the picker falls back to whatever local venues are already known
+  // (the 3 legacy rows plus any already Core-linked from a prior session).
+  useEffect(() => {
+    let cancelled = false
+    listCoreLocations()
+      .then((list) => {
+        if (!cancelled) setCoreLocations(list)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setCoreLocationsError(
+          err instanceof ApiError && err.status === 403
+            ? 'Only a Simplified Suite Core organisation owner can browse Locations live — showing previously used venues only.'
+            : 'Could not reach Simplified Suite Core — showing previously used venues only.',
+        )
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Same shape as clientOptions, for a venue just created/linked inline.
+  // Core locations already mirrored locally (core_location_id set on an
+  // existing venue) are excluded from the live list so each Location
+  // appears exactly once, under its local (linkable) id.
   const venueOptions = useMemo(() => {
-    if (!createdVenue || venues.some((v) => v.id === createdVenue.id)) return venues
-    return [...venues, createdVenue]
-  }, [venues, createdVenue])
+    const local = !createdVenue || venues.some((v) => v.id === createdVenue.id) ? venues : [...venues, createdVenue]
+    const linkedCoreIds = new Set(local.map((v) => v.core_location_id).filter((id): id is string => Boolean(id)))
+    const liveCore = coreLocations.filter((c) => !linkedCoreIds.has(c.id))
+    return { local, liveCore }
+  }, [venues, createdVenue, coreLocations])
+
+  // Selecting an already-mirrored local venue just picks its id directly.
+  // Selecting a live Core location (value `core:<id>`) resolves/creates
+  // the local mirror row via linkCoreVenue first — venue_id (the FK Jobs
+  // actually store) has to point at a local row either way.
+  async function handleVenueSelect(value: string) {
+    setVenueSelectValue(value)
+    if (!value) {
+      setVenueId('')
+      return
+    }
+    if (!value.startsWith('core:')) {
+      setVenueId(value)
+      return
+    }
+    const core = coreLocations.find((c) => c.id === value.slice('core:'.length))
+    if (!core) return
+    setVenueLinking(true)
+    setVenueError(undefined)
+    try {
+      const local = await linkCoreVenue({ core_location_id: core.id, name: core.name, address: core.address, timezone: core.timezone })
+      setCreatedVenue(local)
+      setVenueId(local.id)
+      setVenueSelectValue(local.id)
+    } catch {
+      setVenueError('Could not link that location — try again.')
+      setVenueSelectValue(venueId)
+    } finally {
+      setVenueLinking(false)
+    }
+  }
 
   async function saveNewVenue() {
     if (!newVenueName.trim()) {
@@ -1706,15 +1927,38 @@ function JobCreateForm({
     setVenueSaving(true)
     setVenueError(undefined)
     try {
-      const venue = await createVenue({ name: newVenueName.trim(), city: newVenueCity.trim() || undefined, timezone: 'Europe/London' })
+      // Create in Core first so the new Location is visible to every
+      // product going forward, then link the local mirror row — same
+      // create-then-link shape as ClientMatchPanel's createAndConfirm.
+      const core = await createCoreLocation({ name: newVenueName.trim() })
+      const venue = await linkCoreVenue({ core_location_id: core.id, name: core.name, address: core.address, timezone: core.timezone })
       setCreatedVenue(venue)
       setVenueId(venue.id)
+      setVenueSelectValue(venue.id)
       reloadVenues()
       setAddingVenue(false)
       setNewVenueName('')
       setNewVenueCity('')
-    } catch {
-      setVenueError('Could not create that venue.')
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        // Non-owner scheduler — Core's /locations group rejects the
+        // create. Fall back to the pre-J local-only venue, same as before
+        // this task, rather than blocking Job creation entirely.
+        try {
+          const venue = await createVenue({ name: newVenueName.trim(), city: newVenueCity.trim() || undefined, timezone: 'Europe/London' })
+          setCreatedVenue(venue)
+          setVenueId(venue.id)
+          setVenueSelectValue(venue.id)
+          reloadVenues()
+          setAddingVenue(false)
+          setNewVenueName('')
+          setNewVenueCity('')
+        } catch {
+          setVenueError('Could not create that venue.')
+        }
+      } else {
+        setVenueError('Could not create that venue.')
+      }
     } finally {
       setVenueSaving(false)
     }
@@ -1962,30 +2206,53 @@ function JobCreateForm({
           <label style={{ ...labelStyle, flex: 1 }}>
             Venue (optional)
             {!addingVenue ? (
-              <div style={{ display: 'flex', gap: 6 }}>
-                <select value={venueId} onChange={(e) => setVenueId(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-                  <option value="">Not set</option>
-                  {venueOptions.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name}
-                    </option>
-                  ))}
-                </select>
-                {/* Testing feedback item C: the only way to add a venue
-                    used to be Core's own admin (/admin → Locations) — a
-                    scheduler creating a Job with a new venue had to leave
-                    this form entirely. Same create-then-select shape as
-                    the Monday-fetch Client flow, kept local-only (no
-                    Core-Location-linking scaffolding exists for venues —
-                    see createVenue's own comment). */}
-                <button
-                  type="button"
-                  onClick={() => setAddingVenue(true)}
-                  title="Add a new venue"
-                  style={{ flexShrink: 0, border: '1px dashed var(--primary-soft)', background: '#fff', color: 'var(--primary-soft)', borderRadius: 8, padding: '0 10px', cursor: 'pointer' }}
-                >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <select
+                    value={venueSelectValue}
+                    onChange={(e) => handleVenueSelect(e.target.value)}
+                    disabled={venueLinking}
+                    style={{ ...inputStyle, flex: 1, opacity: venueLinking ? 0.7 : 1 }}
+                  >
+                    <option value="">Not set</option>
+                    {venueOptions.liveCore.length > 0 && (
+                      <optgroup label="Locations (Simplified Suite)">
+                        {venueOptions.liveCore.map((c) => (
+                          <option key={`core:${c.id}`} value={`core:${c.id}`}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {venueOptions.local.length > 0 && (
+                      <optgroup label="Previously used">
+                        {venueOptions.local.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  {/* Testing feedback item J: the venue picker now reads
+                      Core's own Locations live (same "pickers always go
+                      live" rule Client already followed) — selecting one
+                      resolves/creates the local mirror row venue_id
+                      actually points at. This "+" still exists for the
+                      no-match case, now creating in Core first too (see
+                      saveNewVenue). */}
+                  <button
+                    type="button"
+                    onClick={() => setAddingVenue(true)}
+                    title="Add a new venue"
+                    style={{ flexShrink: 0, border: '1px dashed var(--primary-soft)', background: '#fff', color: 'var(--primary-soft)', borderRadius: 8, padding: '0 10px', cursor: 'pointer' }}
+                  >
                   <Plus size={13} />
-                </button>
+                  </button>
+                </div>
+                {venueLinking && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }}>Linking…</div>}
+                {venueError && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--danger)' }}>{venueError}</div>}
+                {coreLocationsError && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }}>{coreLocationsError}</div>}
               </div>
             ) : (
               <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -2824,6 +3091,7 @@ function JobsContent({
               onOpenInPlanner={(req) => onOpenRoleInPlanner(req.job_id, req.id)}
               onConfirmBooking={handleConfirmBooking}
               onCancelBooking={handleCancelBooking}
+              onDaysUpdated={() => reloadBookings(selected.requirements)}
               onDeleteRequirement={handleDeleteRequirement}
             />
           ))}
@@ -3014,6 +3282,11 @@ function PlannerContent({
   }, [targetReqId, summary])
 
   const { data: pool, reload: reloadCandidates } = useCandidates(activeReq?.id)
+  // Testing feedback item L — currently pencilled/offered/confirmed people
+  // for the active requirement, with their day coverage. Planner already
+  // has "Already asked" for awaiting-response/declined; this is the
+  // "who's actually holding a slot right now" counterpart it was missing.
+  const { data: currentBookings, reload: reloadCurrentBookings } = useBookingsForRequirement(activeReq?.id)
 
   // The optional second half of "Not available" — offered right after the
   // decline is recorded, since that's the moment the call's context (did
@@ -3025,7 +3298,7 @@ function PlannerContent({
   async function handleOffer(personId: string, status: 'offered' | 'pencilled' = 'offered') {
     if (!activeReq) return
     await offerBooking(activeReq.id, personId, activeReq.start_date, activeReq.end_date, activeReq.call_time, status)
-    await Promise.all([reloadCandidates(), reloadSummaries()])
+    await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
   }
 
   // "Not available" — a decline recorded straight from the phone call,
@@ -3036,8 +3309,18 @@ function PlannerContent({
     if (!activeReq) return
     const { start_date: startDate, end_date: endDate } = activeReq
     await offerBooking(activeReq.id, personId, startDate, endDate, activeReq.call_time, 'declined')
-    await Promise.all([reloadCandidates(), reloadSummaries()])
+    await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
     setDeclinedFollowUp({ personId, name, startDate, endDate })
+  }
+
+  async function handleConfirmCurrentBooking(bookingId: string) {
+    await confirmBooking(bookingId)
+    await Promise.all([reloadSummaries(), reloadCurrentBookings()])
+  }
+
+  async function handleCancelCurrentBooking(bookingId: string) {
+    await cancelBooking(bookingId)
+    await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
   }
 
   if (!summary) {
@@ -3068,6 +3351,20 @@ function PlannerContent({
         <div style={{ flex: 1 }}>
           <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 12 }}>Crew matching — {activeReq?.role_name}</div>
           <div style={{ border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '16px 18px' }}>
+            {currentBookings.length > 0 && (
+              <div style={{ borderBottom: '1px solid var(--line)', paddingBottom: 10, marginBottom: 14 }}>
+                <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, color: 'var(--ink-muted)', marginBottom: 4 }}>Currently booked</div>
+                {currentBookings.map((b) => (
+                  <BookedPersonRow
+                    key={b.id}
+                    booking={b}
+                    onConfirm={() => handleConfirmCurrentBooking(b.id)}
+                    onCancel={() => handleCancelCurrentBooking(b.id)}
+                    onDaysUpdated={reloadCurrentBookings}
+                  />
+                ))}
+              </div>
+            )}
             {declinedFollowUp && (
               <div style={{ border: '1px solid var(--line)', background: 'var(--surface)', borderRadius: 10, padding: 12, marginBottom: 16 }}>
                 <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)', marginBottom: 8 }}>

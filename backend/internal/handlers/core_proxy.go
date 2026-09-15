@@ -145,3 +145,20 @@ func (a *API) RefreshCoreJob(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	a.proxyToCore(w, r, "/api/jobs/"+url.PathEscape(id)+"/refresh")
 }
+
+// ListCoreLocations backs the Job Venue picker — live per §5a's picker
+// rule, same pattern as ListCoreClients. Note: Core's /api/locations group
+// is RequireOwner-gated in its entirety (unlike /api/clients, where only
+// Create/Update are gated), so this will 403 for a non-owner scheduler's
+// session — that's a Core-side constraint this proxy just relays, not one
+// Ralto works around.
+func (a *API) ListCoreLocations(w http.ResponseWriter, r *http.Request) {
+	a.proxyToCore(w, r, "/api/locations")
+}
+
+// CreateCoreLocation proxies a "no match — create a new Location" request
+// straight to Core's own POST /api/locations, same relay-only pattern as
+// CreateCoreClient.
+func (a *API) CreateCoreLocation(w http.ResponseWriter, r *http.Request) {
+	a.proxyToCore(w, r, "/api/locations")
+}

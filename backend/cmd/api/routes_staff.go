@@ -36,6 +36,8 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 		r.Get("/core-clients", api.ListCoreClients)
 		r.Post("/core-clients", api.CreateCoreClient)
 		r.Get("/core-contracts", api.ListCoreContracts)
+		r.Get("/core-locations", api.ListCoreLocations)
+		r.Post("/core-locations", api.CreateCoreLocation)
 
 		// Shared Core Job entity — one Monday fetch, visible from every
 		// product. See Core's own migrations/0008_jobs.sql.
@@ -49,6 +51,7 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Get("/{id}", api.GetVenue)
 			r.Put("/{id}", api.UpdateVenue)
 			r.Delete("/{id}", api.DeleteVenue)
+			r.Post("/link-core", api.LinkCoreVenue)
 		})
 
 		r.Route("/roles", func(r chi.Router) {

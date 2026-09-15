@@ -127,8 +127,19 @@ export interface Venue {
   country?: string
   timezone: string
   notes?: string
+  core_location_id?: string
   created_at: string
   updated_at: string
+}
+
+// The subset of Core's own Location shape the Job Venue picker reads —
+// fetched live (GET /core-locations, proxied), same "pickers go live"
+// rule as CoreClient/CoreContract above.
+export interface CoreLocation {
+  id: string
+  name: string
+  address?: string
+  timezone?: string
 }
 
 export interface Role {
@@ -261,6 +272,12 @@ export interface Booking {
   // that returns a bare Booking.
   first_name?: string
   last_name?: string
+  // shift_dates — testing feedback item L — the actual booking_shifts day
+  // coverage (YYYY-MM-DD, ascending), also only present on
+  // ListBookingsForRequirement's response. Empty for a booking created
+  // before this feature existed and never since updated — treat that the
+  // same as full coverage, not zero days (see BookingDaysBadge).
+  shift_dates?: string[]
 }
 
 export interface CrewBooking extends Booking {
