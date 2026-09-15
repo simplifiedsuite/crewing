@@ -139,6 +139,17 @@ type linkCoreClientRequest struct {
 // + mirrored name/brand colour) and migrations/0009. Idempotent: calling
 // this again for a core_client_id already mirrored just returns the
 // existing local row unchanged, it never creates a duplicate.
+//
+// Testing feedback item M: the lookup below used to check only
+// core_client_id, missing every client row seeded before that column
+// existed — the original Stage 1 migration mirrored Core's Client by
+// setting the local row's own `id` equal to Core's Client id directly
+// (core_client_id left NULL), a different, older linking convention. Any
+// of those legacy rows matched through this flow found no core_client_id
+// match, fell through to the INSERT branch, and created a genuine
+// duplicate every time (confirmed live: IMG (UFC), UEFA, and a "Man City
+// Events" row all duplicated this way). Checking `id = $1` too covers
+// both conventions.
 func (a *API) LinkCoreClient(w http.ResponseWriter, r *http.Request) {
 	var req linkCoreClientRequest
 	if err := readJSON(r, &req); err != nil {
@@ -152,7 +163,7 @@ func (a *API) LinkCoreClient(w http.ResponseWriter, r *http.Request) {
 
 	var c models.Client
 	err := scanClient(a.DB.QueryRow(r.Context(),
-		`SELECT `+clientSelectColumns+` FROM clients WHERE core_client_id = $1 AND organisation_id = $2`,
+		`SELECT `+clientSelectColumns+` FROM clients WHERE (core_client_id = $1 OR id = $1) AND organisation_id = $2`,
 		req.CoreClientID, currentOrgID,
 	), &c)
 	if err == nil {

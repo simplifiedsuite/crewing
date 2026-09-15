@@ -993,7 +993,15 @@ function urgencyFor(summary: JobSummary) {
 
 function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summary: JobSummary; client: Client | undefined; selected: boolean; fallbackIndex: number; onOpen: (id: string) => void }) {
   const u = urgencyFor(summary)
-  const quiet = u.tier === 'complete' || u.tier === 'quiet'
+  // Testing feedback item N: 'complete' and 'quiet' used to share the same
+  // muted treatment, which made a fully-crewed job look exactly like an
+  // inactive/problem one — the opposite of what a green "all confirmed"
+  // badge should communicate. Only 'quiet' (far out, not yet crewed — a
+  // real "nothing to do yet" state, not a positive one) stays muted now;
+  // 'complete' renders at full strength so the row itself reads as done,
+  // matching the green check-circle language Today's own "All crew
+  // covered" panel already uses for the same "no action needed" idea.
+  const quiet = u.tier === 'quiet'
   const pct = summary.required > 0 ? (summary.confirmed / summary.required) * 100 : 0
   const StatusIcon = u.Icon
 
@@ -1408,6 +1416,18 @@ function ClientMatchPanel({ fetchedName, onResolved }: { fetchedName: string; on
   const [status, setStatus] = useState<'loading' | 'matched' | 'no-match' | 'picking' | 'creating' | 'resolved' | 'error'>('loading')
   const [coreClients, setCoreClients] = useState<CoreClient[]>([])
   const [matched, setMatched] = useState<CoreClient | undefined>(undefined)
+  // closeMatch — testing feedback item M: Monday's "client" field is a tags
+  // column, not a copy of Core's own Client name (e.g. a Monday tag of
+  // "UFC" for what Core has as "IMG (UFC)") — an exact-string match can
+  // legitimately find nothing even though the real client already exists,
+  // and someone clicking "Create new client" at that point silently
+  // produces a genuine duplicate Core Client (this is how the IMG (UFC)/
+  // UEFA duplicates found in production actually happened — confirmed live
+  // find-or-create linking itself is idempotent by core_client_id, see
+  // LinkCoreClient server-side). This is a nudge, not an auto-link: still
+  // requires an explicit click, just makes the likely real match visible
+  // instead of relying on someone to remember to check "Choose existing".
+  const [closeMatch, setCloseMatch] = useState<CoreClient | undefined>(undefined)
   const [pickId, setPickId] = useState('')
   const [newName, setNewName] = useState(fetchedName)
   const [resolved, setResolved] = useState<Client | undefined>(undefined)
@@ -1423,6 +1443,13 @@ function ClientMatchPanel({ fetchedName, onResolved }: { fetchedName: string; on
         const norm = (s: string) => s.trim().toLowerCase()
         const found = list.find((c) => norm(c.name) === norm(fetchedName))
         setMatched(found)
+        if (!found) {
+          const loose = (s: string) => s.replace(/[^a-z0-9]/gi, '').toLowerCase()
+          const a = loose(fetchedName)
+          setCloseMatch(a ? list.find((c) => { const b = loose(c.name); return b.length > 0 && (b.includes(a) || a.includes(b)) }) : undefined)
+        } else {
+          setCloseMatch(undefined)
+        }
         setStatus(found ? 'matched' : 'no-match')
       })
       .catch(() => {
@@ -1492,9 +1519,19 @@ function ClientMatchPanel({ fetchedName, onResolved }: { fetchedName: string; on
       {status === 'no-match' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No client named "{fetchedName}" found in Simplified Suite.</div>
+          {closeMatch && (
+            <div style={{ border: '1px solid var(--primary-soft)', background: 'var(--primary-tint)', borderRadius: 8, padding: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>
+                Did you mean <strong>{closeMatch.name}</strong>? Monday's client field doesn't always match Simplified Suite's name exactly.
+              </span>
+              <button onClick={() => confirm(closeMatch)} disabled={busy} style={matchPrimaryButtonStyle}>
+                {busy ? 'Linking…' : `Yes, use ${closeMatch.name}`}
+              </button>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={() => setStatus('creating')} style={matchPrimaryButtonStyle}>
-              Create new client
+            <button onClick={() => setStatus('creating')} style={closeMatch ? matchButtonStyle : matchPrimaryButtonStyle}>
+              {closeMatch ? 'No, create a new client' : 'Create new client'}
             </button>
             <button onClick={() => setStatus('picking')} style={matchButtonStyle}>
               Choose an existing client
