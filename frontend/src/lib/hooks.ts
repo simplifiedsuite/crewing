@@ -67,6 +67,17 @@ export function useVenues() {
   return useCollection<Venue>('/venues')
 }
 
+// createVenue — testing feedback item C: the backend has had a full
+// venues CRUD API since it was first built, but nothing on the frontend
+// ever called the write endpoints; a scheduler needing a new venue had to
+// go into Core's own admin instead. This is the local-only equivalent of
+// Client's inline-create (no Core-Location-linking scaffolding exists for
+// venues yet — that would be a separate, bigger piece of work if ever
+// wanted, matching Client/Core's own mirror pattern).
+export function createVenue(input: { name: string; address?: string; city?: string; country?: string; timezone: string; notes?: string }) {
+  return api.post<Venue>('/venues', input)
+}
+
 export function usePeople() {
   return useCollection<Person>('/people')
 }
@@ -292,6 +303,21 @@ export function createJobRequirement(
   input: { role_id: string; quantity_required: number; start_date: string; end_date: string; call_time?: string; notes?: string },
 ) {
   return api.post(`/jobs/${jobId}/requirements`, input)
+}
+
+export function updateJobRequirement(
+  reqId: string,
+  input: { role_id: string; quantity_required: number; start_date: string; end_date: string; call_time?: string; notes?: string },
+) {
+  return api.put(`/job-requirements/${reqId}`, input)
+}
+
+// deleteJobRequirement cascades every booking against it (backend FK is
+// ON DELETE CASCADE, not a blocking guard) — the caller is responsible
+// for warning about that before calling this, same as the confirm step
+// already used for Cancel job/Mark complete.
+export function deleteJobRequirement(reqId: string) {
+  return api.delete<{ ok: boolean }>(`/job-requirements/${reqId}`)
 }
 
 export function createJobContact(jobId: string, input: { name: string; role_title?: string; email?: string; phone?: string }) {

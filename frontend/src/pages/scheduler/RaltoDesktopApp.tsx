@@ -59,6 +59,9 @@ import {
   updateJobStatus,
   useCompletedJobsForPerson,
   createJobRequirement,
+  updateJobRequirement,
+  deleteJobRequirement,
+  createVenue,
   createJobContact,
   fetchMondayProjectLookup,
   listCoreClients,
@@ -355,7 +358,19 @@ function AttentionCard({ alert, onResolve }: { alert: OperationalAlert; onResolv
   )
 }
 
-function TodayContent({ summaries, clients, alerts, reloadAlerts }: { summaries: JobSummary[]; clients: Record<string, Client>; alerts: OperationalAlert[]; reloadAlerts: () => void }) {
+function TodayContent({
+  summaries,
+  clients,
+  alerts,
+  reloadAlerts,
+  onOpenJob,
+}: {
+  summaries: JobSummary[]
+  clients: Record<string, Client>
+  alerts: OperationalAlert[]
+  reloadAlerts: () => void
+  onOpenJob: (id: string) => void
+}) {
   const liveSummaries = useMemo(() => summaries.filter((s) => isLiveToday(s.job)), [summaries])
   const totalRequired = liveSummaries.reduce((sum, s) => sum + s.required, 0)
   const totalConfirmed = liveSummaries.reduce((sum, s) => sum + s.confirmed, 0)
@@ -411,7 +426,11 @@ function TodayContent({ summaries, clients, alerts, reloadAlerts }: { summaries:
               const complete = s.confirmed === s.required && s.required > 0
               const client = clients[s.job.client_id]
               return (
-                <div key={s.job.id} style={{ position: 'relative', border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '12px 14px 12px 18px', overflow: 'hidden' }}>
+                <div
+                  key={s.job.id}
+                  onClick={() => onOpenJob(s.job.id)}
+                  style={{ position: 'relative', border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '12px 14px 12px 18px', overflow: 'hidden', cursor: 'pointer' }}
+                >
                   <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientColor(client, i) }} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                     <div style={{ minWidth: 0 }}>
@@ -958,11 +977,11 @@ function CalendarContent({
 // role could otherwise cancel out in the totals and still look complete.
 function urgencyFor(summary: JobSummary) {
   const jobComplete = summary.required > 0 && summary.requirements.every((r) => r.quantity_confirmed >= r.quantity_required)
-  if (jobComplete) return { tier: 'complete', color: 'var(--success)', bg: 'var(--success-bg)', Icon: CheckCircle2 }
+  if (jobComplete) return { tier: 'complete', color: 'var(--success)', bg: 'var(--success-bg)', Icon: CheckCircle2, title: 'Fully crewed — every role confirmed' }
   const daysUntilStart = Math.ceil((new Date(summary.job.start_date).getTime() - Date.now()) / DAY_MS)
-  if (daysUntilStart <= 5) return { tier: 'critical', color: 'var(--danger)', bg: 'var(--danger-bg)', Icon: AlertTriangle }
-  if (daysUntilStart <= 30) return { tier: 'attention', color: 'var(--attention)', bg: 'var(--attention-bg)', Icon: Clock }
-  return { tier: 'quiet', color: 'var(--ink-muted)', bg: 'var(--track)', Icon: Minus }
+  if (daysUntilStart <= 5) return { tier: 'critical', color: 'var(--danger)', bg: 'var(--danger-bg)', Icon: AlertTriangle, title: 'Starts within 5 days and still not fully crewed' }
+  if (daysUntilStart <= 30) return { tier: 'attention', color: 'var(--attention)', bg: 'var(--attention-bg)', Icon: Clock, title: 'Starts within 30 days and still not fully crewed' }
+  return { tier: 'quiet', color: 'var(--ink-muted)', bg: 'var(--track)', Icon: Minus, title: 'Starts more than 30 days out — not urgent yet' }
 }
 
 function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summary: JobSummary; client: Client | undefined; selected: boolean; fallbackIndex: number; onOpen: (id: string) => void }) {
@@ -996,7 +1015,11 @@ function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summ
           </div>
         </div>
       </div>
-      <div style={{ flexShrink: 0, width: 22, height: 22, borderRadius: '50%', background: u.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* Testing feedback item G: this badge had no tooltip anywhere, so
+          the triangle/clock/check/minus distinction (crewing-complete vs.
+          days-until-start urgency, per urgencyFor above) wasn't
+          discoverable — hover text now states it in plain language. */}
+      <div title={u.title} style={{ flexShrink: 0, width: 22, height: 22, borderRadius: '50%', background: u.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <StatusIcon size={12} color={u.color} strokeWidth={2.5} />
       </div>
     </button>
@@ -1087,18 +1110,28 @@ function JobRoleRow({
   onOpenInPlanner,
   onConfirmBooking,
   onCancelBooking,
+  onDeleteRequirement,
 }: {
   req: JobRequirementWithCounts
   bookings: Booking[]
   onOpenInPlanner: (req: JobRequirementWithCounts) => void
   onConfirmBooking: (bookingId: string) => void
   onCancelBooking: (bookingId: string) => void
+  // Testing feedback item F: there was previously no way to remove a
+  // whole role requirement, only individual people booked against it.
+  onDeleteRequirement: (req: JobRequirementWithCounts) => void
 }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const roleComplete = req.quantity_confirmed >= req.quantity_required
   const stillNeeded = req.quantity_required - req.quantity_confirmed - req.quantity_pencilled - req.quantity_offered
   const StatusIcon = roleComplete ? CheckCircle2 : req.quantity_offered > 0 ? Clock : AlertTriangle
   const statusColor = roleComplete ? 'var(--success)' : 'var(--attention)'
   const statusBg = roleComplete ? 'var(--success-bg)' : 'var(--attention-bg)'
+  // Testing feedback item G — same "no tooltip anywhere" gap as the Jobs
+  // list badge, one level down: this is per-role, not per-job (offered vs.
+  // nobody-asked-yet), a genuinely different thing from urgencyFor's
+  // days-until-start reading even though it reuses the same two icons.
+  const statusTitle = roleComplete ? 'Role fully confirmed' : req.quantity_offered > 0 ? 'Someone has been offered this role, not yet confirmed' : 'Nobody has been offered this role yet'
 
   return (
     <div style={{ border: '1px solid var(--line)', borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1108,9 +1141,16 @@ function JobRoleRow({
           <span style={{ fontFamily: 'var(--font)', fontVariantNumeric: 'tabular-nums', fontSize: 12.5, fontWeight: 600, color: roleComplete ? 'var(--ink-muted)' : 'var(--attention)' }}>
             {req.quantity_confirmed}/{req.quantity_required}
           </span>
-          <div style={{ width: 22, height: 22, borderRadius: '50%', background: statusBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div title={statusTitle} style={{ width: 22, height: 22, borderRadius: '50%', background: statusBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <StatusIcon size={12} color={statusColor} strokeWidth={2.5} />
           </div>
+          <button
+            onClick={() => setConfirmingDelete(true)}
+            title="Delete this role requirement"
+            style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--ink-muted)', padding: 2, display: 'flex' }}
+          >
+            <Trash2 size={13} />
+          </button>
         </div>
       </div>
 
@@ -1122,13 +1162,35 @@ function JobRoleRow({
         </div>
       )}
 
-      {stillNeeded > 0 && (
+      {stillNeeded > 0 && !confirmingDelete && (
         <button
           onClick={() => onOpenInPlanner(req)}
           style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'none', color: 'var(--primary)', cursor: 'pointer', padding: 0, fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, textAlign: 'left' }}
         >
           Find {stillNeeded} more in Planner <ChevronRight size={12} />
         </button>
+      )}
+
+      {confirmingDelete && (
+        <div style={{ border: '1px solid var(--danger)', background: 'var(--danger-bg)', borderRadius: 8, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}>
+            Delete this {req.role_name} requirement?
+            {bookings.length > 0
+              ? ` This removes ${bookings.length} ${bookings.length === 1 ? 'person' : 'people'} booked against it (confirmed, pencilled, or offered) — not just the empty slots.`
+              : ' No one is booked against it yet.'}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setConfirmingDelete(false)} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+              Never mind
+            </button>
+            <button
+              onClick={() => onDeleteRequirement(req)}
+              style={{ border: 'none', background: 'var(--danger)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+            >
+              Yes, delete
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -1470,6 +1532,7 @@ function JobCreateForm({
   clients,
   projects,
   venues,
+  reloadVenues,
   roles,
   prefill,
   editingJob,
@@ -1480,6 +1543,11 @@ function JobCreateForm({
   clients: Client[]
   projects: Project[]
   venues: Venue[]
+  // Testing feedback item C: a scheduler could only add a new venue via
+  // Core's own admin, not from Job creation/editing. reload lets a venue
+  // created inline here (see VenueOptionOrCreate below) show up for the
+  // next Job form too, not just be merged into this one's own options.
+  reloadVenues: () => void
   roles: Role[]
   prefill?: JobCreatePrefill
   // When set, the form edits this Job instead of creating a new one — see
@@ -1505,6 +1573,15 @@ function JobCreateForm({
   const [clientId, setClientId] = useState(editingJob?.client_id ?? prefill?.client_id ?? '')
   const [projectId, setProjectId] = useState(editingJob?.project_id ?? '')
   const [venueId, setVenueId] = useState(editingJob?.venue_id ?? '')
+  // Testing feedback item C — inline "create a new venue" state, same
+  // create-then-select shape as the Monday-fetch Client flow's
+  // matchedLocalClient (see clientOptions below).
+  const [addingVenue, setAddingVenue] = useState(false)
+  const [newVenueName, setNewVenueName] = useState('')
+  const [newVenueCity, setNewVenueCity] = useState('')
+  const [createdVenue, setCreatedVenue] = useState<Venue | undefined>(undefined)
+  const [venueSaving, setVenueSaving] = useState(false)
+  const [venueError, setVenueError] = useState<string | undefined>(undefined)
   const [projectReference, setProjectReference] = useState(editingJob?.project_reference ?? '')
   const [startDate, setStartDate] = useState(editingJob?.start_date ?? prefill?.start_date ?? todayISO())
   const [endDate, setEndDate] = useState(editingJob?.end_date ?? prefill?.end_date ?? prefill?.start_date ?? todayISO())
@@ -1614,6 +1691,34 @@ function JobCreateForm({
     if (!matchedLocalClient || clients.some((c) => c.id === matchedLocalClient.id)) return clients
     return [...clients, matchedLocalClient]
   }, [clients, matchedLocalClient])
+
+  // Same shape as clientOptions, for a venue just created inline (item C).
+  const venueOptions = useMemo(() => {
+    if (!createdVenue || venues.some((v) => v.id === createdVenue.id)) return venues
+    return [...venues, createdVenue]
+  }, [venues, createdVenue])
+
+  async function saveNewVenue() {
+    if (!newVenueName.trim()) {
+      setVenueError('Name is required.')
+      return
+    }
+    setVenueSaving(true)
+    setVenueError(undefined)
+    try {
+      const venue = await createVenue({ name: newVenueName.trim(), city: newVenueCity.trim() || undefined, timezone: 'Europe/London' })
+      setCreatedVenue(venue)
+      setVenueId(venue.id)
+      reloadVenues()
+      setAddingVenue(false)
+      setNewVenueName('')
+      setNewVenueCity('')
+    } catch {
+      setVenueError('Could not create that venue.')
+    } finally {
+      setVenueSaving(false)
+    }
+  }
 
   // The Contract picker is scoped to whichever Core Client the Job
   // actually resolves to — a fresh Monday match, or (editing an existing
@@ -1856,14 +1961,59 @@ function JobCreateForm({
           </label>
           <label style={{ ...labelStyle, flex: 1 }}>
             Venue (optional)
-            <select value={venueId} onChange={(e) => setVenueId(e.target.value)} style={inputStyle}>
-              <option value="">Not set</option>
-              {venues.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name}
-                </option>
-              ))}
-            </select>
+            {!addingVenue ? (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select value={venueId} onChange={(e) => setVenueId(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+                  <option value="">Not set</option>
+                  {venueOptions.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}
+                    </option>
+                  ))}
+                </select>
+                {/* Testing feedback item C: the only way to add a venue
+                    used to be Core's own admin (/admin → Locations) — a
+                    scheduler creating a Job with a new venue had to leave
+                    this form entirely. Same create-then-select shape as
+                    the Monday-fetch Client flow, kept local-only (no
+                    Core-Location-linking scaffolding exists for venues —
+                    see createVenue's own comment). */}
+                <button
+                  type="button"
+                  onClick={() => setAddingVenue(true)}
+                  title="Add a new venue"
+                  style={{ flexShrink: 0, border: '1px dashed var(--primary-soft)', background: '#fff', color: 'var(--primary-soft)', borderRadius: 8, padding: '0 10px', cursor: 'pointer' }}
+                >
+                  <Plus size={13} />
+                </button>
+              </div>
+            ) : (
+              <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <input value={newVenueName} onChange={(e) => setNewVenueName(e.target.value)} placeholder="Venue name" style={inputStyle} />
+                <input value={newVenueCity} onChange={(e) => setNewVenueCity(e.target.value)} placeholder="City (optional)" style={inputStyle} />
+                {venueError && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--danger)' }}>{venueError}</div>}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddingVenue(false)
+                      setVenueError(undefined)
+                    }}
+                    style={{ flex: 1, border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveNewVenue}
+                    disabled={venueSaving}
+                    style={{ flex: 1, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '6px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', opacity: venueSaving ? 0.7 : 1 }}
+                  >
+                    {venueSaving ? 'Adding…' : 'Add venue'}
+                  </button>
+                </div>
+              </div>
+            )}
           </label>
         </div>
 
@@ -1887,26 +2037,35 @@ function JobCreateForm({
         <label style={labelStyle}>
           Commitment
           <div style={{ display: 'flex', gap: 8 }}>
-            {(['firm', 'pencil'] as const).map((c) => (
+            {/* Testing feedback item D: this used to render the raw
+                JobCommitment enum value ("firm"/"pencil") — same class of
+                bug as the job tag once leaking raw Job.status. Labels now
+                match the 4-tag vocabulary (jobStatusTag) exactly:
+                Booked/Pencilled, not Firm/Pencil. */}
+            {(
+              [
+                { value: 'firm' as const, label: 'Booked' },
+                { value: 'pencil' as const, label: 'Pencilled' },
+              ]
+            ).map(({ value, label }) => (
               <button
-                key={c}
-                onClick={() => setCommitment(c)}
+                key={value}
+                onClick={() => setCommitment(value)}
                 style={{
                   flex: 1,
                   textAlign: 'center',
-                  textTransform: 'capitalize',
                   padding: '8px 0',
                   borderRadius: 8,
                   cursor: 'pointer',
                   fontFamily: 'var(--font)',
                   fontWeight: 600,
                   fontSize: 13,
-                  border: commitment === c ? '1px solid var(--primary-soft)' : '1px solid var(--line)',
-                  background: commitment === c ? 'var(--primary-tint)' : '#fff',
-                  color: commitment === c ? 'var(--primary-soft)' : 'var(--ink-muted)',
+                  border: commitment === value ? '1px solid var(--primary-soft)' : '1px solid var(--line)',
+                  background: commitment === value ? 'var(--primary-tint)' : '#fff',
+                  color: commitment === value ? 'var(--primary-soft)' : 'var(--ink-muted)',
                 }}
               >
-                {c}
+                {label}
               </button>
             ))}
           </div>
@@ -2057,7 +2216,25 @@ function JobCreateForm({
 // endpoint (createJobRequirement) and the same fields as the create-time
 // version, just scoped to one job already on screen instead of a batch of
 // draft rows.
-function AddRoleRequirementRow({ jobId, jobStartDate, jobEndDate, roles, onAdded }: { jobId: string; jobStartDate: string; jobEndDate: string; roles: Role[]; onAdded: () => void }) {
+function AddRoleRequirementRow({
+  jobId,
+  jobStartDate,
+  jobEndDate,
+  roles,
+  existingRequirements,
+  onAdded,
+}: {
+  jobId: string
+  jobStartDate: string
+  jobEndDate: string
+  roles: Role[]
+  // Testing feedback item F: adding a role that already had a requirement
+  // on this job used to always POST a brand-new job_requirements row
+  // instead of bumping the existing one's quantity — MCFC v Sunderland
+  // ended up with two separate "Camera Op" rows. Needed to detect that.
+  existingRequirements: JobRequirementWithCounts[]
+  onAdded: () => void
+}) {
   const [adding, setAdding] = useState(false)
   const [roleId, setRoleId] = useState('')
   const [quantity, setQuantity] = useState('1')
@@ -2077,7 +2254,25 @@ function AddRoleRequirementRow({ jobId, jobStartDate, jobEndDate, roles, onAdded
     setSaving(true)
     setError(undefined)
     try {
-      await createJobRequirement(jobId, { role_id: roleId, quantity_required: Number(quantity) || 1, start_date: startDate, end_date: endDate })
+      const existing = existingRequirements.find((r) => r.role_id === roleId)
+      if (existing) {
+        // Same role already has a requirement on this job — increase its
+        // quantity_required rather than creating a second, separate row.
+        // Deliberately keeps the EXISTING requirement's own dates/call
+        // time/notes untouched (only quantity changes) rather than
+        // silently overwriting them with whatever was just typed into
+        // this "add" form's own date fields.
+        await updateJobRequirement(existing.id, {
+          role_id: existing.role_id,
+          quantity_required: existing.quantity_required + (Number(quantity) || 1),
+          start_date: existing.start_date,
+          end_date: existing.end_date,
+          call_time: existing.call_time,
+          notes: existing.notes,
+        })
+      } else {
+        await createJobRequirement(jobId, { role_id: roleId, quantity_required: Number(quantity) || 1, start_date: startDate, end_date: endDate })
+      }
       setAdding(false)
       setRoleId('')
       setQuantity('1')
@@ -2102,6 +2297,8 @@ function AddRoleRequirementRow({ jobId, jobStartDate, jobEndDate, roles, onAdded
     )
   }
 
+  const matchingExisting = existingRequirements.find((r) => r.role_id === roleId)
+
   return (
     <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: 6, border: '1px solid var(--line)', borderRadius: 8, padding: 10 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
@@ -2122,19 +2319,24 @@ function AddRoleRequirementRow({ jobId, jobStartDate, jobEndDate, roles, onAdded
         </label>
         <label style={{ ...labelStyle, flex: 1 }}>
           Start
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} disabled={!!matchingExisting} style={{ ...inputStyle, opacity: matchingExisting ? 0.5 : 1 }} />
         </label>
         <label style={{ ...labelStyle, flex: 1 }}>
           End
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} disabled={!!matchingExisting} style={{ ...inputStyle, opacity: matchingExisting ? 0.5 : 1 }} />
         </label>
         <button onClick={submit} disabled={saving} style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '7px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>
-          {saving ? 'Adding…' : 'Add'}
+          {saving ? 'Adding…' : matchingExisting ? `Add ${quantity || 1} more` : 'Add'}
         </button>
         <button onClick={() => setAdding(false)} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '7px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
           Cancel
         </button>
       </div>
+      {matchingExisting && (
+        <div style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }}>
+          {matchingExisting.role_name} already has {matchingExisting.quantity_required} on this job — this adds to that instead of creating a second entry.
+        </div>
+      )}
       {error && <div style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--danger)' }}>{error}</div>}
     </div>
   )
@@ -2259,6 +2461,7 @@ function JobsContent({
   clients,
   venues,
   venuesList,
+  reloadVenues,
   projects,
   roles,
   vehiclesList,
@@ -2274,6 +2477,7 @@ function JobsContent({
   clients: Record<string, Client>
   venues: Record<string, unknown>
   venuesList: Venue[]
+  reloadVenues: () => void
   projects: Project[]
   roles: Role[]
   vehiclesList: Vehicle[]
@@ -2364,6 +2568,13 @@ function JobsContent({
     reloadSummaries()
   }
 
+  // Testing feedback item F — see JobRoleRow's own confirm step for the
+  // cascade-delete warning; this just performs the delete once confirmed.
+  async function handleDeleteRequirement(req: JobRequirementWithCounts) {
+    await deleteJobRequirement(req.id)
+    reloadSummaries()
+  }
+
   const pendingBookings = useMemo(
     () => (selected ? selected.requirements.flatMap((r) => (bookingsByReq[r.id] ?? []).filter((b) => b.status === 'pencilled' || b.status === 'offered')) : []),
     [selected, bookingsByReq],
@@ -2411,7 +2622,7 @@ function JobsContent({
   }
 
   if (creating) {
-    return <JobCreateForm clients={Object.values(clients)} projects={projects} venues={venuesList} roles={roles} prefill={prefill} onCancel={cancelCreating} onCreated={finishCreating} />
+    return <JobCreateForm clients={Object.values(clients)} projects={projects} venues={venuesList} reloadVenues={reloadVenues} roles={roles} prefill={prefill} onCancel={cancelCreating} onCreated={finishCreating} />
   }
 
   if (!selected) {
@@ -2588,6 +2799,7 @@ function JobsContent({
               clients={Object.values(clients)}
               projects={projects}
               venues={venuesList}
+              reloadVenues={reloadVenues}
               roles={roles}
               editingJob={selected.job}
               embedded
@@ -2612,10 +2824,18 @@ function JobsContent({
               onOpenInPlanner={(req) => onOpenRoleInPlanner(req.job_id, req.id)}
               onConfirmBooking={handleConfirmBooking}
               onCancelBooking={handleCancelBooking}
+              onDeleteRequirement={handleDeleteRequirement}
             />
           ))}
           {selected.requirements.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', gridColumn: '1 / -1' }}>No role requirements added yet.</div>}
-          <AddRoleRequirementRow jobId={selected.job.id} jobStartDate={selected.job.start_date} jobEndDate={selected.job.end_date} roles={roles} onAdded={reloadSummaries} />
+          <AddRoleRequirementRow
+            jobId={selected.job.id}
+            jobStartDate={selected.job.start_date}
+            jobEndDate={selected.job.end_date}
+            roles={roles}
+            existingRequirements={selected.requirements}
+            onAdded={reloadSummaries}
+          />
         </div>
 
         <JobVehiclesSection key={selected.job.id} jobId={selected.job.id} vehiclesList={vehiclesList} />
@@ -2668,6 +2888,7 @@ function RequirementRow({ req, active, onOpen }: { req: JobRequirementWithCounts
   const StatusIcon = roleComplete ? CheckCircle2 : req.quantity_offered > 0 ? Clock : AlertTriangle
   const statusColor = roleComplete ? 'var(--success)' : 'var(--attention)'
   const statusBg = roleComplete ? 'var(--success-bg)' : 'var(--attention-bg)'
+  const statusTitle = roleComplete ? 'Role fully confirmed' : req.quantity_offered > 0 ? 'Someone has been offered this role, not yet confirmed' : 'Nobody has been offered this role yet'
 
   return (
     <button
@@ -2702,7 +2923,7 @@ function RequirementRow({ req, active, onOpen }: { req: JobRequirementWithCounts
           </div>
         )}
       </div>
-      <div style={{ flexShrink: 0, width: 22, height: 22, borderRadius: '50%', background: statusBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div title={statusTitle} style={{ flexShrink: 0, width: 22, height: 22, borderRadius: '50%', background: statusBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <StatusIcon size={12} color={statusColor} strokeWidth={2.5} />
       </div>
     </button>
@@ -3075,6 +3296,15 @@ function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCal
   const showInline = mode === 'week' || mode === 'fortnight'
   const inlineText = !showInline ? undefined : booking ? booking.job_name : unavailable ? (unavailable.type ? AVAILABILITY_TYPE_LABEL[unavailable.type] : 'Unavailable') : undefined
   const inlineColor = booking ? '#fff' : 'var(--danger)'
+  // Testing feedback item E: pencilled (and conflict) cells use a hatched
+  // background (bookingCellStyle above) whose stripes alternate between a
+  // solid colour and `transparent` — white text sat directly on that was
+  // unreadable wherever the cell's own light background showed through
+  // the transparent gaps. A text-shadow (rather than a different text
+  // colour, or changing the hatch itself) keeps the same white reading
+  // fine against the solid stripes while punching enough contrast against
+  // the gaps too, without needing to know the hatch's own colour in advance.
+  const hatchedText = booking?.status === 'pencilled' || booking?.status === 'conflict'
 
   return (
     <div
@@ -3102,6 +3332,7 @@ function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCal
             fontWeight: 600,
             fontSize: 10,
             color: inlineColor,
+            textShadow: hatchedText ? '0 0 2px rgba(0,0,0,0.85), 0 0 4px rgba(0,0,0,0.6)' : undefined,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -5111,7 +5342,7 @@ export function RaltoDesktopApp() {
 
   const { summaries, reload: reloadSummaries } = useJobSummaries()
   const { data: clientsList, reload: reloadClients } = useClients()
-  const { data: venuesList } = useVenues()
+  const { data: venuesList, reload: reloadVenues } = useVenues()
   const { data: projectsList } = useProjects()
   const { data: rolesList, reload: reloadRoles } = useRoles()
   const { data: vehiclesList, reload: reloadVehicles } = useVehicles()
@@ -5138,6 +5369,16 @@ export function RaltoDesktopApp() {
   const openJobFromCalendar = (jobId: string) => {
     setSelectedPlannerJobId(jobId)
     setActive('planner')
+  }
+
+  // Testing feedback item A: Today's job cards had no click handler at
+  // all. Jobs (not Planner) is the natural destination here — Today's
+  // list is job-scoped ("N confirmed / N required"), matching the Jobs
+  // tab's own list, not a crewing action against one specific role the
+  // way Calendar's openJobFromCalendar is.
+  const openJobFromToday = (jobId: string) => {
+    setSelectedJobId(jobId)
+    setActive('jobs')
   }
 
   // Same handoff shape as openJobFromCalendar, extended to carry the
@@ -5207,7 +5448,7 @@ export function RaltoDesktopApp() {
       `}</style>
 
       <Sidebar active={active} onSelect={setActive} />
-      {active === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} />}
+      {active === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} onOpenJob={openJobFromToday} />}
       {active === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
       {active === 'team' && <ResourceCalendarContent people={people} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
       {active === 'jobs' && (
@@ -5216,6 +5457,7 @@ export function RaltoDesktopApp() {
           clients={clients}
           venues={venues}
           venuesList={venuesList}
+          reloadVenues={reloadVenues}
           projects={projectsList}
           roles={rolesList}
           vehiclesList={vehiclesList}

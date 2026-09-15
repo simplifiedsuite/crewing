@@ -264,7 +264,7 @@ func (a *API) ListCandidatesForJobRequirement(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	if err := a.loadAlreadyAsked(r.Context(), jobID, &groups.AlreadyAsked); err != nil {
+	if err := a.loadAlreadyAsked(r.Context(), jobID, reqID, &groups.AlreadyAsked); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to find candidates")
 		return
 	}
@@ -273,20 +273,31 @@ func (a *API) ListCandidatesForJobRequirement(w http.ResponseWriter, r *http.Req
 }
 
 // loadAlreadyAsked unions the two places a decline or outstanding ask can
-// live (addendum v2 §5): a formal Booking offer (role-scoped, via whichever
-// JobRequirement on this Job it was made against) and a generic
-// AvailabilityRequest (job-scoped, no role — a date-range ask made before
-// any requirement existed to attach it to). Scoped to the whole Job, not
-// just the requirement being crewed right now, so a decline on Camera still
-// surfaces while crewing Utilities on the same job.
-func (a *API) loadAlreadyAsked(ctx context.Context, jobID string, group *alreadyAskedGroup) error {
+// live (addendum v2 §5): a formal Booking offer and a generic
+// AvailabilityRequest. These two are deliberately scoped differently, per
+// what each actually represents in the data model, not the same scope
+// applied twice:
+//
+//   - Booking offers are always made against one specific JobRequirement
+//     (a real, formal ask for that exact role) — scoped to reqID.
+//     Testing feedback: this used to be scoped to the whole Job instead,
+//     so a person asked about Camera Op showed as "already asked" while a
+//     scheduler was crewing an unrelated role (e.g. Sound) on the same
+//     job — a real bug, not the deliberate design the old comment here
+//     claimed.
+//   - AvailabilityRequests have no role at all by design (a generic
+//     "are you free these dates" ask made before any specific requirement
+//     existed to attach it to — see alreadyAskedEntry's own RoleName
+//     comment) — there is no narrower scope than jobID to apply here,
+//     since the ask was never about one role in the first place.
+func (a *API) loadAlreadyAsked(ctx context.Context, jobID, reqID string, group *alreadyAskedGroup) error {
 	bookingRows, err := a.DB.Query(ctx, `
 		SELECT p.id, p.first_name || ' ' || p.last_name, ro.name, b.status, b.offered_at, b.responded_at
 		FROM bookings b
 		JOIN job_requirements jr ON jr.id = b.job_requirement_id
 		JOIN roles ro ON ro.id = jr.role_id
 		JOIN people p ON p.id = b.person_id
-		WHERE jr.job_id = $1 AND b.status IN ('offered', 'declined') AND b.organisation_id = $2`, jobID, currentOrgID)
+		WHERE b.job_requirement_id = $1 AND b.status IN ('offered', 'declined') AND b.organisation_id = $2`, reqID, currentOrgID)
 	if err != nil {
 		return err
 	}
