@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -84,10 +87,37 @@ func main() {
 			addr = ":8080"
 		}
 	}
+	srv := &http.Server{Addr: addr, Handler: r}
+
+	// Graceful shutdown — without this, Render's SIGTERM on every
+	// restart/redeploy just killed the process mid-flight, so the deferred
+	// pool.Close() above never ran and pgxpool's open connections were
+	// orphaned rather than released. The pooler then had to notice each
+	// dead TCP connection on its own before reclaiming the session slot,
+	// which was slow enough that repeated restarts steadily exhausted
+	// Supabase's 15-connection session-mode pool. Catching the signal here
+	// stops the server accepting new requests, lets in-flight ones finish,
+	// then returns from ListenAndServe so the deferred pool.Close() above
+	// actually runs and releases every connection immediately.
+	shutdownDone := make(chan struct{})
+	go func() {
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+		<-stop
+		log.Println("shutting down...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("server shutdown: %v", err)
+		}
+		close(shutdownDone)
+	}()
+
 	log.Printf("ralto api listening on %s", addr)
-	if err := http.ListenAndServe(addr, r); err != nil {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	<-shutdownDone
 }
 
 func splitOrigins(raw string) []string {

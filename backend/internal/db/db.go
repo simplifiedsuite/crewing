@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,6 +25,26 @@ func Connect(ctx context.Context) (*pgxpool.Pool, error) {
 	// protocol can't decode those types into a string destination. Simple
 	// protocol mode returns text-format results, which it can.
 	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+
+	// DATABASE_URL points at Supabase's session-mode pooler, capped at 15
+	// concurrent client connections total — shared with ralto-ical (its own
+	// per-request psycopg2 connections, not pooled) plus manual/dashboard
+	// access. Explicit here rather than left at pgxpool's own defaults
+	// (MaxConns scales with NumCPU, which is 1 on this service's current
+	// plan but not something to depend on implicitly) so this pool's share
+	// of the 15-connection cap is a deliberate, visible number. The actual
+	// leak that exhausted the cap (2026-09-15/16) was every restart of this
+	// process orphaning its open connections — main.go had no graceful
+	// shutdown, so Render's SIGTERM just killed the process without ever
+	// calling pool.Close(), leaving the pooler to notice the dead TCP
+	// connections on its own. That's fixed in cmd/api/main.go; the tighter
+	// MaxConnIdleTime/MaxConnLifetime here are defence in depth so a
+	// connection this pool still owns doesn't sit around unnecessarily
+	// either.
+	config.MaxConns = 6
+	config.MinConns = 0
+	config.MaxConnIdleTime = 5 * time.Minute
+	config.MaxConnLifetime = 30 * time.Minute
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
