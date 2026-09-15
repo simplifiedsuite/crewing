@@ -993,15 +993,18 @@ function urgencyFor(summary: JobSummary) {
 
 function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summary: JobSummary; client: Client | undefined; selected: boolean; fallbackIndex: number; onOpen: (id: string) => void }) {
   const u = urgencyFor(summary)
-  // Testing feedback item N: 'complete' and 'quiet' used to share the same
-  // muted treatment, which made a fully-crewed job look exactly like an
-  // inactive/problem one — the opposite of what a green "all confirmed"
-  // badge should communicate. Only 'quiet' (far out, not yet crewed — a
-  // real "nothing to do yet" state, not a positive one) stays muted now;
-  // 'complete' renders at full strength so the row itself reads as done,
-  // matching the green check-circle language Today's own "All crew
-  // covered" panel already uses for the same "no action needed" idea.
-  const quiet = u.tier === 'quiet'
+  // Testing feedback item N, then a follow-up: 'complete' and 'quiet' used
+  // to share one muted treatment, making a fully-crewed job look exactly
+  // like an inactive one — fixed by un-muting 'complete'. The follow-up
+  // decided 'quiet' (far out, not yet crewed) shouldn't be muted either —
+  // every job now renders at full strength regardless of tier; the clock
+  // icon on the badge (see urgencyFor) is the only signal a far-out job
+  // isn't due yet. Progress bar opacity and the left-edge colour strip
+  // were tied to this same flag (checked directly, not assumed) and are
+  // un-muted along with the text; the bar's own grey fill for 'quiet' is
+  // that tier's designated accent colour (the same pattern 'attention'/
+  // 'critical'/'complete' each get their own colour), not muting, so it
+  // stays — only the opacity dimming layered on top of it is gone.
   const pct = summary.required > 0 ? (summary.confirmed / summary.required) * 100 : 0
   const StatusIcon = u.Icon
 
@@ -1018,11 +1021,11 @@ function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summ
       // the container scrolls instead of squeezing rows.
       style={{ position: 'relative', width: '100%', textAlign: 'left', background: selected ? 'var(--primary-tint)' : '#fff', border: selected ? '1px solid var(--primary-soft)' : '1px solid var(--line)', borderRadius: 12, padding: '12px 14px 12px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, overflow: 'hidden', flexShrink: 0 }}
     >
-      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientColor(client, fallbackIndex), opacity: quiet ? 0.6 : 1 }} />
+      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientColor(client, fallbackIndex) }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: quiet ? 'var(--ink-muted)' : 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{summary.job.name}</span>
+            <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{summary.job.name}</span>
             <CommitmentBadge job={summary.job} />
           </div>
           <span style={{ fontFamily: 'var(--font)', fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontSize: 12.5, color: u.color, flexShrink: 0 }}>
@@ -1034,7 +1037,7 @@ function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summ
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
           <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'var(--track)', overflow: 'hidden' }}>
-            <div style={{ width: `${pct}%`, height: '100%', background: u.tier === 'quiet' ? 'var(--ink-muted)' : u.color, opacity: quiet ? 0.5 : 1 }} />
+            <div style={{ width: `${pct}%`, height: '100%', background: u.color }} />
           </div>
         </div>
       </div>
