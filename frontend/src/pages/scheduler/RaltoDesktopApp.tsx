@@ -1077,12 +1077,20 @@ const BOOKING_STATUS_ICON: Partial<Record<BookingStatus, { Icon: typeof CheckCir
 // frontend twin of the backend's own expandDateRange (booking_shifts.go),
 // used to know a booking's full day count and to build the day-picker.
 function expandDateRangeClient(start: string, end: string): string[] {
+  // `new Date(start + 'T00:00:00')` parses as LOCAL midnight, and
+  // toISOString() always converts to UTC — for any viewer in a timezone
+  // ahead of UTC (BST included, i.e. most of this app's own UK users half
+  // the year) that silently shifted every date back by a day. Date.UTC
+  // builds the timestamp directly in UTC, so there's no local-timezone
+  // conversion for toISOString() to shift.
+  const [sy, sm, sd] = start.split('-').map(Number)
+  const [ey, em, ed] = end.split('-').map(Number)
   const days: string[] = []
-  let d = new Date(start + 'T00:00:00')
-  const last = new Date(end + 'T00:00:00')
-  while (d <= last) {
-    days.push(d.toISOString().slice(0, 10))
-    d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
+  let t = Date.UTC(sy, sm - 1, sd)
+  const last = Date.UTC(ey, em - 1, ed)
+  while (t <= last) {
+    days.push(new Date(t).toISOString().slice(0, 10))
+    t += 24 * 60 * 60 * 1000
   }
   return days
 }
