@@ -81,6 +81,7 @@ import {
   cancelBooking,
   confirmBooking,
   updateBookingDays,
+  updateBookingDateRange,
   useBookingsForRequirement,
   listBookingsForRequirement,
   createPerson,
@@ -1214,6 +1215,119 @@ function BookingDaysBadge({ booking, onUpdated }: { booking: Booking; onUpdated:
   )
 }
 
+// BookingDateRangeEditor — testing feedback: "no way to amend the dates on
+// an existing role/booking at all" — Booking.start_date/end_date was only
+// ever set once, at pencil/offer time, always inherited from the parent
+// JobRequirement's own range with no override. UpdateBooking already
+// supported changing them server-side; this is the missing UI. Also the
+// fix for false conflicts: a Booking that should only cover part of its
+// requirement's span (e.g. one day of a two-day role) can now actually be
+// narrowed to that, rather than permanently inheriting the full range.
+function BookingDateRangeEditor({ booking, onUpdated }: { booking: Booking; onUpdated: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [startDate, setStartDate] = useState(booking.start_date)
+  const [endDate, setEndDate] = useState(booking.end_date)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  function startEditing() {
+    setStartDate(booking.start_date)
+    setEndDate(booking.end_date)
+    setError(undefined)
+    setEditing(true)
+  }
+
+  async function save() {
+    if (!startDate || !endDate || endDate < startDate) {
+      setError('End date must be on or after the start date.')
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      await updateBookingDateRange(booking, startDate, endDate)
+      setEditing(false)
+      onUpdated()
+    } catch {
+      setError('Could not update those dates — try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={startEditing}
+        title="Edit this booking's dates"
+        style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 2, color: 'var(--ink-muted)', display: 'flex' }}
+      >
+        <CalendarDays size={13} />
+      </button>
+    )
+  }
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        zIndex: 5,
+        right: 0,
+        top: '100%',
+        marginTop: 4,
+        border: '1px solid var(--line)',
+        background: '#fff',
+        borderRadius: 8,
+        padding: 10,
+        boxShadow: '0 4px 16px rgba(0,0,0,0.14)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        minWidth: 190,
+      }}
+    >
+      <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, color: 'var(--ink)' }}>Booking dates</div>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }}>
+        Start
+        <input
+          type="date"
+          value={startDate}
+          onChange={(e) => setStartDate(e.target.value)}
+          style={{ border: '1px solid var(--line)', borderRadius: 6, padding: '4px 6px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}
+        />
+      </label>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }}>
+        End
+        <input
+          type="date"
+          value={endDate}
+          onChange={(e) => setEndDate(e.target.value)}
+          style={{ border: '1px solid var(--line)', borderRadius: 6, padding: '4px 6px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}
+        />
+      </label>
+      {error && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--danger)' }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          style={{ flex: 1, border: '1px solid var(--line)', background: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', color: 'var(--ink-muted)' }}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          style={{ flex: 1, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function BookedPersonRow({
   booking,
   onConfirm,
@@ -1242,6 +1356,7 @@ function BookedPersonRow({
         </span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <BookingDateRangeEditor booking={booking} onUpdated={onDaysUpdated} />
         <BookingDaysBadge booking={booking} onUpdated={onDaysUpdated} />
         {canConfirm && (
           <button

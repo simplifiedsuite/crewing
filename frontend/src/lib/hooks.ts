@@ -479,6 +479,26 @@ export function updateBookingDays(booking: Booking, days: string[]) {
   })
 }
 
+// updateBookingDateRange — a scheduler amending which dates a Booking
+// itself actually covers (extending by a rig day, shortening it, or
+// narrowing it to less than the full JobRequirement span in the first
+// place — e.g. someone only needed for one day of a two-day role). This
+// was previously impossible through the UI even though UpdateBooking
+// already supported it server-side; also the fix for false conflicts
+// caused by a Booking inheriting the requirement's full date range with
+// no way to override it (see resolveShiftDays server-side — day coverage
+// isn't passed here, so it defaults to the new range in full, same as a
+// freshly pencilled booking).
+export function updateBookingDateRange(booking: Booking, startDate: string, endDate: string) {
+  return api.put<Booking>(`/bookings/${booking.id}`, {
+    start_date: startDate,
+    end_date: endDate,
+    call_time: booking.call_time ?? null,
+    rate_override: booking.rate_override ?? null,
+    notes: booking.notes ?? null,
+  })
+}
+
 export function confirmBooking(id: string) {
   return api.post<Booking>(`/bookings/${id}/confirm`)
 }
