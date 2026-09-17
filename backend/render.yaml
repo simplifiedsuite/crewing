@@ -22,7 +22,7 @@ services:
       - key: SENDGRID_FROM_NAME
         value: Crewing
       - key: ICAL_FEED_BASE_URL
-        value: https://ralto-ical.onrender.com/feed
+        value: https://ical.simplifiedsuite.io/feed
 
   - type: web
     name: ralto-ical

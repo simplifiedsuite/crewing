@@ -1,6 +1,6 @@
 """
-Ralto iCal feed generator
-=========================
+Crewing iCal feed generator
+============================
 
 Turns a Person's Bookings/BookingShifts into a valid RFC 5545 (.ics) calendar
 feed, matching the schema addendum's design:
@@ -225,10 +225,10 @@ def generate_ics_feed(person: Person, bookings: list[Booking]) -> str:
     header = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//Ralto//Crew Booking Calendar//EN",
+        "PRODID:-//Crewing//Crew Booking Calendar//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
-        f"X-WR-CALNAME:Ralto — {_escape_text(person.name)}'s bookings",
+        f"X-WR-CALNAME:Crewing — {_escape_text(person.name)}'s bookings",
         "X-WR-TIMEZONE:Europe/London",
         # Refresh hints — most calendar apps poll on their own schedule
         # regardless, but this documents the intent and some clients (e.g.
@@ -288,10 +288,10 @@ def generate_dakboard_ics_feed(jobs: list[JobSummary]) -> str:
     header = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//Ralto//Dakboard Jobs Feed//EN",
+        "PRODID:-//Crewing//Dakboard Jobs Feed//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
-        "X-WR-CALNAME:Ralto — Booked jobs",
+        "X-WR-CALNAME:Crewing — Booked jobs",
         "X-WR-TIMEZONE:Europe/London",
         "X-PUBLISHED-TTL:PT1H",
         "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
@@ -375,7 +375,7 @@ def validate_ics(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Demo — same sample jobs used across the rest of Ralto's prototypes, built
+# Demo — same sample jobs used across the rest of Crewing's prototypes, built
 # out as one crew member's booking list to show the feed end to end.
 # ---------------------------------------------------------------------------
 
