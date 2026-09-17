@@ -361,7 +361,7 @@ const DOCUMENT_TYPE_LABEL: Record<PersonDocument['type'], string> = {
 // field for any of them — matching what UpdateMyProfile actually accepts,
 // not hiding fields that the API would otherwise honour.
 function ProfileEditForm({ person, onCancel, onSaved }: { person: Person; onCancel: () => void; onSaved: (p: Person) => void }) {
-  const [email, setEmail] = useState(person.email)
+  const [email, setEmail] = useState(person.email ?? '')
   const [phone, setPhone] = useState(person.phone ?? '')
   const [baseLocation, setBaseLocation] = useState(person.base_location ?? '')
   const [vehicleRegistration, setVehicleRegistration] = useState(person.vehicle_registration ?? '')
@@ -381,7 +381,7 @@ function ProfileEditForm({ person, onCancel, onSaved }: { person: Person; onCanc
   // Progressive disclosure: the password field only appears once email has
   // actually been touched — the requirement is behavioural (enforced
   // server-side regardless), not about this exact interaction shape.
-  const emailChanged = email.trim().toLowerCase() !== person.email.trim().toLowerCase()
+  const emailChanged = email.trim().toLowerCase() !== (person.email ?? '').trim().toLowerCase()
 
   const inputStyle = { border: '1px solid var(--line)', borderRadius: 8, padding: '10px 12px', fontFamily: 'var(--font-body)', fontSize: 14, color: 'var(--ink)', background: '#fff', width: '100%', boxSizing: 'border-box' as const }
   const labelStyle = { display: 'flex', flexDirection: 'column' as const, gap: 5, fontFamily: 'var(--font-body)', fontSize: 12.5, color: 'var(--ink-muted)', marginTop: 14 }

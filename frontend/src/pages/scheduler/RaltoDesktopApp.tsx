@@ -50,6 +50,7 @@ import {
   useScheduleItHistory,
   useProspectiveEvents,
   createProspectiveEvent,
+  updateProspectiveEvent,
   dropProspectiveEvent,
   convertProspectiveEvent,
   useResourceCalendar,
@@ -66,6 +67,8 @@ import {
   deleteJobRequirement,
   createVenue,
   createJobContact,
+  useJobDayLabels,
+  setJobDayLabel,
   fetchMondayProjectLookup,
   listCoreClients,
   createCoreClient,
@@ -120,6 +123,7 @@ import type {
   Availability,
   AvailabilityStatus,
   AvailabilityType,
+  AvailabilityDayPortion,
   Booking,
   BookingStatus,
   Candidate,
@@ -615,6 +619,7 @@ function WeekRow({
   events,
   onOpenJob,
   onSelectEvent,
+  onSelectDate,
 }: {
   weekDates: Date[]
   // Plural: the 2-month view has two "current" months, and any day
@@ -627,6 +632,10 @@ function WeekRow({
   events: ProspectiveEvent[]
   onOpenJob: (id: string) => void
   onSelectEvent: (event: ProspectiveEvent) => void
+  // Testing feedback U: clicking a date starts a new Prospective Event
+  // with that date pre-filled as the start date, rather than always
+  // defaulting to today and making the scheduler re-enter it by hand.
+  onSelectDate: (iso: string) => void
 }) {
   const { placed, laneCount } = packWeek(weekDates, jobs)
   const barHeight = tall ? 30 : 22
@@ -639,7 +648,12 @@ function WeekRow({
           const inMonth = referenceMonths.includes(date.getMonth())
           const isToday = sameDay(date, today)
           return (
-            <div key={date.toISOString()} style={{ padding: '8px 10px 4px', fontFamily: 'var(--font)', fontSize: 12.5, fontWeight: isToday ? 700 : 500, color: isToday ? 'var(--primary)' : inMonth ? 'var(--ink)' : 'var(--ink-muted)', opacity: inMonth ? 1 : 0.5 }}>
+            <div
+              key={date.toISOString()}
+              onClick={() => onSelectDate(dateISO(date))}
+              title="Click to start a new prospective event on this date"
+              style={{ padding: '8px 10px 4px', fontFamily: 'var(--font)', fontSize: 12.5, fontWeight: isToday ? 700 : 500, color: isToday ? 'var(--primary)' : inMonth ? 'var(--ink)' : 'var(--ink-muted)', opacity: inMonth ? 1 : 0.5, cursor: 'pointer' }}
+            >
               {isToday ? (
                 <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: '50%', background: 'var(--primary)', color: '#fff' }}>{date.getDate()}</span>
               ) : (
@@ -669,12 +683,32 @@ function WeekRow({
   )
 }
 
-function AddProspectiveEventForm({ clients, onSaved, onCancel }: { clients: Client[]; onSaved: () => void; onCancel: () => void }) {
-  const [name, setName] = useState('')
-  const [dateStart, setDateStart] = useState(todayISO())
-  const [dateEnd, setDateEnd] = useState(todayISO())
-  const [clientId, setClientId] = useState('')
-  const [notes, setNotes] = useState('')
+function AddProspectiveEventForm({
+  clients,
+  initialDateStart,
+  editingEvent,
+  onSaved,
+  onCancel,
+}: {
+  clients: Client[]
+  // Testing feedback U — set when this form was opened by clicking a
+  // specific Calendar date; falls back to today when opened via the
+  // "+ Prospective event" button instead. Ignored when editingEvent is set.
+  initialDateStart?: string
+  // Testing feedback V — same create form, reused for editing (matching
+  // JobCreateForm's own editingJob pattern): seeds every field from the
+  // existing event and calls updateProspectiveEvent instead of create at
+  // submit time. Previously the only way to change a date was to Drop and
+  // recreate the whole event.
+  editingEvent?: ProspectiveEvent
+  onSaved: () => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(editingEvent?.name ?? '')
+  const [dateStart, setDateStart] = useState(editingEvent?.date_start ?? initialDateStart ?? todayISO())
+  const [dateEnd, setDateEnd] = useState(editingEvent?.date_end ?? initialDateStart ?? todayISO())
+  const [clientId, setClientId] = useState(editingEvent?.client_id ?? '')
+  const [notes, setNotes] = useState(editingEvent?.notes ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
 
@@ -684,7 +718,12 @@ function AddProspectiveEventForm({ clients, onSaved, onCancel }: { clients: Clie
     setSaving(true)
     setError(undefined)
     try {
-      await createProspectiveEvent({ name, date_start: dateStart, date_end: dateEnd, client_id: clientId || undefined, notes: notes || undefined })
+      const input = { name, date_start: dateStart, date_end: dateEnd, client_id: clientId || undefined, notes: notes || undefined }
+      if (editingEvent) {
+        await updateProspectiveEvent(editingEvent.id, input)
+      } else {
+        await createProspectiveEvent(input)
+      }
       onSaved()
     } catch {
       setError('Could not save that event.')
@@ -731,7 +770,7 @@ function AddProspectiveEventForm({ clients, onSaved, onCancel }: { clients: Clie
           disabled={saving || !name || !dateStart || !dateEnd}
           style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '7px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}
         >
-          {saving ? 'Saving…' : 'Add event'}
+          {saving ? 'Saving…' : editingEvent ? 'Save changes' : 'Add event'}
         </button>
       </div>
     </div>
@@ -741,17 +780,23 @@ function AddProspectiveEventForm({ clients, onSaved, onCancel }: { clients: Clie
 function ProspectiveEventDetailCard({
   event,
   client,
+  clients,
   onDropped,
   onClose,
   onConvert,
+  onSaved,
 }: {
   event: ProspectiveEvent
   client: Client | undefined
+  clients: Client[]
   onDropped: () => void
   onClose: () => void
   onConvert: (event: ProspectiveEvent) => void
+  // Testing feedback V
+  onSaved: () => void
 }) {
   const [dropping, setDropping] = useState(false)
+  const [editing, setEditing] = useState(false)
 
   async function drop() {
     setDropping(true)
@@ -761,6 +806,10 @@ function ProspectiveEventDetailCard({
     } finally {
       setDropping(false)
     }
+  }
+
+  if (editing) {
+    return <AddProspectiveEventForm clients={clients} editingEvent={event} onCancel={() => setEditing(false)} onSaved={onSaved} />
   }
 
   return (
@@ -778,6 +827,9 @@ function ProspectiveEventDetailCard({
       <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
         <button onClick={onClose} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '7px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', color: 'var(--ink-muted)' }}>
           Close
+        </button>
+        <button onClick={() => setEditing(true)} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '7px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', color: 'var(--ink)' }}>
+          Edit
         </button>
         <button
           onClick={() => onConvert(event)}
@@ -815,6 +867,10 @@ function CalendarContent({
   const [mode, setMode] = useState<CalendarMode>('month')
   const [refDate, setRefDate] = useState(new Date())
   const [addingEvent, setAddingEvent] = useState(false)
+  // Testing feedback U — set when "add event" was opened by clicking a
+  // specific date, rather than the "+ Prospective event" button; undefined
+  // means AddProspectiveEventForm falls back to its own today() default.
+  const [eventPrefillDate, setEventPrefillDate] = useState<string | undefined>(undefined)
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>(undefined)
   const { data: prospectiveEvents, reload: reloadEvents } = useProspectiveEvents()
 
@@ -890,7 +946,10 @@ function CalendarContent({
         <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)' }}>Calendar</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <button
-            onClick={() => setAddingEvent(true)}
+            onClick={() => {
+              setEventPrefillDate(undefined)
+              setAddingEvent(true)
+            }}
             style={{ display: 'flex', alignItems: 'center', gap: 5, border: '1px dashed var(--primary-soft)', background: '#fff', color: 'var(--primary-soft)', borderRadius: 8, padding: '7px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer' }}
           >
             <Plus size={13} /> Prospective event
@@ -912,6 +971,7 @@ function CalendarContent({
       {addingEvent && (
         <AddProspectiveEventForm
           clients={Object.values(clients)}
+          initialDateStart={eventPrefillDate}
           onCancel={() => setAddingEvent(false)}
           onSaved={() => {
             setAddingEvent(false)
@@ -963,6 +1023,10 @@ function CalendarContent({
               events={openEvents}
               onOpenJob={onOpenJob}
               onSelectEvent={(event) => setSelectedEventId(event.id)}
+              onSelectDate={(iso) => {
+                setEventPrefillDate(iso)
+                setAddingEvent(true)
+              }}
             />
           </Fragment>
         ))}
@@ -972,12 +1036,14 @@ function CalendarContent({
         <ProspectiveEventDetailCard
           event={selectedEvent}
           client={selectedEvent.client_id ? clients[selectedEvent.client_id] : undefined}
+          clients={Object.values(clients)}
           onClose={() => setSelectedEventId(undefined)}
           onConvert={onConvertEvent}
           onDropped={() => {
             setSelectedEventId(undefined)
             reloadEvents()
           }}
+          onSaved={reloadEvents}
         />
       )}
     </div>
@@ -1076,6 +1142,107 @@ function InfoRow({ icon: Icon, label, value }: { icon: typeof CalendarDays; labe
   )
 }
 
+// One day's label, click-to-edit inline — same "click text, becomes an
+// input, Enter/blur saves" shape used elsewhere in this file rather than a
+// popover, since this is a plain one-field edit with nothing else on it.
+function JobDayLabelChip({ date, label, onSave }: { date: string; label: string; onSave: (label: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(label)
+  const [saving, setSaving] = useState(false)
+
+  async function commit() {
+    if (value === label) {
+      setEditing(false)
+      return
+    }
+    setSaving(true)
+    try {
+      await onSave(value)
+      setEditing(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 74 }}>
+      <span style={{ fontFamily: 'var(--font)', fontSize: 10.5, color: 'var(--ink-muted)' }}>{formatDate(date)}</span>
+      {editing ? (
+        <input
+          autoFocus
+          value={value}
+          disabled={saving}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            if (e.key === 'Escape') {
+              setValue(label)
+              setEditing(false)
+            }
+          }}
+          placeholder="e.g. Rig"
+          style={{ border: '1px solid var(--primary-soft)', borderRadius: 6, padding: '3px 6px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)', width: 90 }}
+        />
+      ) : (
+        <button
+          onClick={() => {
+            setValue(label)
+            setEditing(true)
+          }}
+          title="Click to label this day"
+          style={{
+            border: label ? '1px solid var(--primary-tint)' : '1px dashed var(--line)',
+            background: label ? 'var(--primary-tint)' : 'none',
+            borderRadius: 6,
+            padding: '3px 8px',
+            fontFamily: 'var(--font)',
+            fontWeight: 600,
+            fontSize: 12,
+            color: label ? 'var(--primary)' : 'var(--ink-muted)',
+            cursor: 'pointer',
+            textAlign: 'left',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {label || '+ Label'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// JobDayLabelsRow — testing feedback R: what each day of a multi-day Job
+// means (e.g. "Rig", "Match day", "Get-out"), so the day itself carries
+// meaning at a glance. Self-contained data fetch (same shape as
+// BookingDaysBadge/CandidateRow's own local day-range state) since this is
+// the one place labels are actually authored — those other two only ever
+// display what's already set here.
+function JobDayLabelsRow({ job }: { job: Job }) {
+  const { byDate, reload } = useJobDayLabels(job.id)
+  const days = useMemo(() => expandDateRangeClient(job.start_date, job.end_date), [job.start_date, job.end_date])
+
+  if (days.length <= 1) return null
+
+  async function save(date: string, label: string) {
+    await setJobDayLabel(job.id, date, label)
+    reload()
+  }
+
+  return (
+    <div style={{ marginTop: 4, marginBottom: 8 }}>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)', marginBottom: 6 }}>Day labels</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {days.map((date) => (
+          <JobDayLabelChip key={date} date={date} label={byDate[date] ?? ''} onSave={(label) => save(date, label)} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // Compact role row for the Jobs detail pane — deliberately not the same
 // progress-bar component Planner's RequirementRow renders (that duplication
 // was the actual complaint from office testing): just role name, the tick,
@@ -1122,7 +1289,19 @@ function expandDateRangeClient(start: string, end: string): string[] {
 // shift_dates (a booking created before this feature shipped, never since
 // updated) is treated the same as full coverage rather than a false "0 of
 // N days" warning — see bookingWithPersonResponse's own comment server-side.
-function BookingDaysBadge({ booking, onUpdated }: { booking: Booking; onUpdated: () => void }) {
+function BookingDaysBadge({
+  booking,
+  onUpdated,
+  dayLabels,
+}: {
+  booking: Booking
+  onUpdated: () => void
+  // Testing feedback R — what each day within the parent Job means (e.g.
+  // "Rig", "Match day"), fetched once at the Job level (see
+  // JobDayLabelsRow) and threaded down here so this day-by-day checklist
+  // shows it alongside each date.
+  dayLabels?: Record<string, string>
+}) {
   const fullDays = useMemo(() => expandDateRangeClient(booking.start_date, booking.end_date), [booking.start_date, booking.end_date])
   const covered = booking.shift_dates && booking.shift_dates.length > 0 ? booking.shift_dates : fullDays
   const isPartial = covered.length < fullDays.length
@@ -1200,6 +1379,7 @@ function BookingDaysBadge({ booking, onUpdated }: { booking: Booking; onUpdated:
               }
             />
             {formatDate(day)}
+            {dayLabels?.[day] && <span style={{ color: 'var(--primary)', fontWeight: 600 }}> · {dayLabels[day]}</span>}
           </label>
         ))}
       </div>
@@ -1357,11 +1537,14 @@ function BookedPersonRow({
   onConfirm,
   onCancel,
   onDaysUpdated,
+  dayLabels,
 }: {
   booking: Booking
   onConfirm: () => void
   onCancel: () => void
   onDaysUpdated: () => void
+  // Testing feedback R — threaded through to BookingDaysBadge.
+  dayLabels?: Record<string, string>
 }) {
   const meta = BOOKING_STATUS_ICON[booking.status] ?? BOOKING_STATUS_ICON.offered!
   const Icon = meta.Icon
@@ -1381,7 +1564,7 @@ function BookedPersonRow({
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <BookingDateRangeEditor booking={booking} onUpdated={onDaysUpdated} />
-        <BookingDaysBadge booking={booking} onUpdated={onDaysUpdated} />
+        <BookingDaysBadge booking={booking} onUpdated={onDaysUpdated} dayLabels={dayLabels} />
         {canConfirm && (
           <button
             onClick={onConfirm}
@@ -1418,6 +1601,8 @@ function JobRoleRow({
   onCancelBooking,
   onDaysUpdated,
   onDeleteRequirement,
+  onRemoveSlot,
+  dayLabels,
 }: {
   req: JobRequirementWithCounts
   bookings: Booking[]
@@ -1428,6 +1613,12 @@ function JobRoleRow({
   // Testing feedback item F: there was previously no way to remove a
   // whole role requirement, only individual people booked against it.
   onDeleteRequirement: (req: JobRequirementWithCounts) => void
+  // Testing feedback R — threaded through to BookedPersonRow/BookingDaysBadge.
+  dayLabels?: Record<string, string>
+  // Testing feedback X: the narrower action — take back one still-unfilled
+  // slot on a multi-slot role, leaving filled slots untouched. Only ever
+  // rendered when there's a genuine spare slot (stillNeeded > 0) below.
+  onRemoveSlot: (req: JobRequirementWithCounts) => void
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const roleComplete = req.quantity_confirmed >= req.quantity_required
@@ -1465,18 +1656,32 @@ function JobRoleRow({
       {bookings.length > 0 && (
         <div style={{ borderTop: '1px solid var(--line)', paddingTop: 6, display: 'flex', flexDirection: 'column' }}>
           {bookings.map((b) => (
-            <BookedPersonRow key={b.id} booking={b} onConfirm={() => onConfirmBooking(b.id)} onCancel={() => onCancelBooking(b.id)} onDaysUpdated={onDaysUpdated} />
+            <BookedPersonRow key={b.id} booking={b} onConfirm={() => onConfirmBooking(b.id)} onCancel={() => onCancelBooking(b.id)} onDaysUpdated={onDaysUpdated} dayLabels={dayLabels} />
           ))}
         </div>
       )}
 
       {stillNeeded > 0 && !confirmingDelete && (
-        <button
-          onClick={() => onOpenInPlanner(req)}
-          style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'none', color: 'var(--primary)', cursor: 'pointer', padding: 0, fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, textAlign: 'left' }}
-        >
-          Find {stillNeeded} more in Planner <ChevronRight size={12} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <button
+            onClick={() => onOpenInPlanner(req)}
+            style={{ display: 'flex', alignItems: 'center', gap: 4, border: 'none', background: 'none', color: 'var(--primary)', cursor: 'pointer', padding: 0, fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, textAlign: 'left' }}
+          >
+            Find {stillNeeded} more in Planner <ChevronRight size={12} />
+          </button>
+          {/* Testing feedback X — only offered when there's more than one
+              slot total; at quantity 1, the unfilled slot IS the whole
+              requirement, so the Trash2 delete above already covers it. */}
+          {req.quantity_required > 1 && (
+            <button
+              onClick={() => onRemoveSlot(req)}
+              title="Remove one unfilled slot from this role, leaving anyone already booked in place"
+              style={{ display: 'flex', alignItems: 'center', gap: 3, border: '1px solid var(--line)', background: 'none', color: 'var(--ink-muted)', cursor: 'pointer', padding: '3px 8px', borderRadius: 6, fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5 }}
+            >
+              <Minus size={11} /> Remove one slot
+            </button>
+          )}
+        </div>
       )}
 
       {confirmingDelete && (
@@ -2981,6 +3186,10 @@ function JobsContent({
   // from the list (unchanged existing behaviour); only completing a job
   // actually clears it out from under them.
   const selected = activeSummaries.find((s) => s.job.id === selectedId) ?? activeSummaries[0]
+  // Testing feedback R — fetched once for the selected Job, threaded down
+  // to every JobRoleRow/BookedPersonRow/BookingDaysBadge below rather than
+  // each fetching its own copy.
+  const { byDate: dayLabels } = useJobDayLabels(selected?.job.id)
 
   useEffect(() => {
     if (!selected) return
@@ -3028,6 +3237,31 @@ function JobsContent({
   // cascade-delete warning; this just performs the delete once confirmed.
   async function handleDeleteRequirement(req: JobRequirementWithCounts) {
     await deleteJobRequirement(req.id)
+    reloadSummaries()
+  }
+
+  // Testing feedback X — remove exactly one unfilled slot from a
+  // multi-slot role, leaving already-filled slots (real Bookings) alone.
+  // JobRoleRow only ever shows this action when stillNeeded > 0, so there's
+  // always at least one slot to take back without touching a booking row —
+  // quantity_confirmed/pencilled/offered are all derived by counting
+  // Bookings, never stored, so reducing quantity_required alone is the
+  // entire change. Dropping to 0 removes the requirement outright instead
+  // (reusing the same delete path) since a 0-slot role requirement is
+  // meaningless to keep around.
+  async function handleRemoveSlot(req: JobRequirementWithCounts) {
+    if (req.quantity_required <= 1) {
+      await deleteJobRequirement(req.id)
+    } else {
+      await updateJobRequirement(req.id, {
+        role_id: req.role_id,
+        quantity_required: req.quantity_required - 1,
+        start_date: req.start_date,
+        end_date: req.end_date,
+        call_time: req.call_time,
+        notes: req.notes,
+      })
+    }
     reloadSummaries()
   }
 
@@ -3284,6 +3518,7 @@ function JobsContent({
                   to show, per testing feedback item C. */}
               {selected.job.shared_job_id && selected.job.order_number && <InfoRow icon={LinkIcon} label="Monday ref" value={selected.job.order_number} />}
             </div>
+            <JobDayLabelsRow job={selected.job} />
           </>
         ) : (
           // Testing feedback: "Edit" used to open a completely separate
@@ -3326,6 +3561,8 @@ function JobsContent({
               onCancelBooking={handleCancelBooking}
               onDaysUpdated={() => reloadBookings(selected.requirements)}
               onDeleteRequirement={handleDeleteRequirement}
+              onRemoveSlot={handleRemoveSlot}
+              dayLabels={dayLabels}
             />
           ))}
           {selected.requirements.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', gridColumn: '1 / -1' }}>No role requirements added yet.</div>}
@@ -3468,12 +3705,20 @@ function CandidateRow({
   variant,
   onBook,
   onDecline,
+  onOpenConflictJob,
+  dayLabels,
 }: {
   candidate: Candidate
   activeReq: JobRequirementWithCounts
-  variant: 'suitable' | 'possible'
+  variant: 'suitable' | 'possible' | 'conflicted'
   onBook: (personId: string, status: 'offered' | 'pencilled', days: string[]) => Promise<void>
   onDecline: (personId: string, name: string) => void
+  // Only used for variant 'conflicted' — jumps Planner to the other Job
+  // this person is already booked on (testing feedback O's "bonus" link).
+  onOpenConflictJob?: (jobId: string) => void
+  // Testing feedback R — what each day of activeReq's Job means, shown
+  // alongside each date in the "which days" picker below.
+  dayLabels?: Record<string, string>
 }) {
   const fullDays = useMemo(() => expandDateRangeClient(activeReq.start_date, activeReq.end_date), [activeReq.start_date, activeReq.end_date])
   const multiDay = fullDays.length > 1
@@ -3508,16 +3753,44 @@ function CandidateRow({
   const declineStyle = { display: 'flex', alignItems: 'center', gap: 4, background: 'none', color: 'var(--ink-muted)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 10px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }
 
   return (
-    <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0' }}>
+    <div
+      style={{
+        position: 'relative',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '8px 10px',
+        margin: variant === 'conflicted' ? '4px 0' : undefined,
+        borderRadius: variant === 'conflicted' ? 8 : undefined,
+        background: variant === 'conflicted' ? 'var(--attention-bg)' : undefined,
+      }}
+    >
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
           <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{c.name}</span>
           {c.preferred_status === 'preferred' && <Star size={11} color="var(--primary)" fill="var(--primary)" />}
         </div>
-        <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>
-          {c.base_location ?? 'Location unknown'}
-          {c.standard_rate ? ` · ${c.rate_currency ?? ''}${c.standard_rate}/day` : ''}
-        </div>
+        {variant === 'conflicted' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'var(--font)', fontSize: 12, color: 'var(--attention)', marginTop: 1 }}>
+            <AlertTriangle size={11} />
+            Already booked on{' '}
+            {c.conflict_job_id && onOpenConflictJob ? (
+              <button
+                onClick={() => onOpenConflictJob(c.conflict_job_id!)}
+                style={{ border: 'none', background: 'none', padding: 0, font: 'inherit', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+              >
+                {c.conflict_job_name}
+              </button>
+            ) : (
+              c.conflict_job_name
+            )}
+          </div>
+        ) : (
+          <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>
+            {c.base_location ?? 'Location unknown'}
+            {c.standard_rate ? ` · ${c.rate_currency ?? ''}${c.standard_rate}/day` : ''}
+          </div>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
         <button onClick={() => handleClick('pencilled')} title="Hold this person without formally asking yet" style={pencilStyle}>
@@ -3567,6 +3840,7 @@ function CandidateRow({
                   }
                 />
                 {formatDate(day)}
+                {dayLabels?.[day] && <span style={{ color: 'var(--primary)', fontWeight: 600 }}> · {dayLabels[day]}</span>}
               </label>
             ))}
           </div>
@@ -3631,6 +3905,9 @@ function PlannerContent({
   const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete' && !s.job.deleted_at), [summaries])
   const summary = activeSummaries.find((s) => s.job.id === selectedJobId) ?? activeSummaries[0]
   const [activeReq, setActiveReq] = useState<JobRequirementWithCounts | undefined>(undefined)
+  // Testing feedback R — same "fetch once at the Job level" shape as
+  // JobsContent's own dayLabels.
+  const { byDate: dayLabels } = useJobDayLabels(summary?.job.id)
 
   // Picks the default (first unfulfilled requirement) whenever the
   // selected job changes. Deliberately keyed only on the job, not on
@@ -3722,7 +3999,12 @@ function PlannerContent({
 
       <div style={{ display: 'flex', gap: 24 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 12 }}>Roles — {summary.job.name}</div>
+          <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 12 }}>
+            Roles — {summary.job.name}{' '}
+            <span style={{ fontWeight: 500, color: 'var(--ink-muted)', opacity: 0.8 }}>
+              · {formatDate(summary.job.start_date)} – {formatDate(summary.job.end_date)}
+            </span>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {summary.requirements.map((r) => (
               <RequirementRow key={r.id} req={r} active={r.id === activeReq?.id} onOpen={setActiveReq} />
@@ -3744,6 +4026,7 @@ function PlannerContent({
                     onConfirm={() => handleConfirmCurrentBooking(b.id)}
                     onCancel={() => handleCancelCurrentBooking(b.id)}
                     onDaysUpdated={reloadCurrentBookings}
+                    dayLabels={dayLabels}
                   />
                 ))}
               </div>
@@ -3769,7 +4052,7 @@ function PlannerContent({
               {pool.suitable.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No one in this group right now.</div>}
               {activeReq &&
                 pool.suitable.map((c) => (
-                  <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="suitable" onBook={handleOffer} onDecline={handleNotAvailable} />
+                  <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="suitable" onBook={handleOffer} onDecline={handleNotAvailable} dayLabels={dayLabels} />
                 ))}
             </CandidateGroup>
 
@@ -3777,9 +4060,18 @@ function PlannerContent({
               {pool.possible.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No one in this group right now.</div>}
               {activeReq &&
                 pool.possible.map((c) => (
-                  <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="possible" onBook={handleOffer} onDecline={handleNotAvailable} />
+                  <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="possible" onBook={handleOffer} onDecline={handleNotAvailable} dayLabels={dayLabels} />
                 ))}
             </CandidateGroup>
+
+            {pool.conflicted.length > 0 && (
+              <CandidateGroup title="CONFLICT — ALREADY BOOKED" tone="var(--attention)">
+                {activeReq &&
+                  pool.conflicted.map((c) => (
+                    <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="conflicted" onBook={handleOffer} onDecline={handleNotAvailable} onOpenConflictJob={onSelectJob} dayLabels={dayLabels} />
+                  ))}
+              </CandidateGroup>
+            )}
 
             <CandidateGroup title="UNAVAILABLE" tone="var(--ink-muted)">
               {pool.unavailable.map((c) => (
@@ -3899,11 +4191,31 @@ function activeBookingFor(row: ResourceCalendarRow, iso: string): ResourceCalend
 // Availability row is rendered as BOTH, flagged — never one picked over
 // the other, since that overlap is exactly the exception this view exists
 // to catch.
-function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCalendarRow; date: Date; mode: TeamMode; onOpenJob: (id: string) => void }) {
+function ResourceCalendarCell({
+  row,
+  date,
+  mode,
+  onOpenJob,
+  onOpenAvailability,
+}: {
+  row: ResourceCalendarRow
+  date: Date
+  mode: TeamMode
+  onOpenJob: (id: string) => void
+  // Testing feedback S — click-through parity with onOpenJob.
+  onOpenAvailability: (personId: string) => void
+}) {
   const iso = dateISO(date)
   const booking = activeBookingFor(row, iso)
   const unavailable = row.availability.find((a) => a.status === 'unavailable' && a.start_date <= iso && a.end_date >= iso)
   const tentative = !unavailable && row.availability.find((a) => a.status === 'tentative' && a.start_date <= iso && a.end_date >= iso)
+  const availabilityEntry = unavailable ?? (tentative || undefined)
+  // Testing feedback S — half-day (AM/PM-only) entries used to render
+  // identically to a full-day one. day_portion defaults to 'full' on
+  // every existing row (see migrations/0019), so this only ever
+  // activates for a genuinely half-day entry.
+  const halfDay = availabilityEntry?.day_portion && availabilityEntry.day_portion !== 'full' ? availabilityEntry.day_portion : undefined
+  const portionLabel = halfDay === 'am' ? 'AM only' : halfDay === 'pm' ? 'PM only' : undefined
   // Two independent sources of "conflict": a booking directly marked
   // Conflict, or a live booking overlapping an Unavailable row. Either one
   // gets the same badge — the texture in bookingCellStyle only covers the
@@ -3914,9 +4226,9 @@ function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCal
   const title = booking
     ? `${booking.job_name} — ${booking.role_name} (${booking.status})${unavailable ? ' · also marked unavailable this day' : ''}`
     : unavailable
-      ? `Unavailable${unavailable.type ? ` — ${AVAILABILITY_TYPE_LABEL[unavailable.type]}` : ''}`
+      ? `Unavailable${portionLabel ? ` (${portionLabel})` : ''}${unavailable.type ? ` — ${AVAILABILITY_TYPE_LABEL[unavailable.type]}` : ''}`
       : tentative
-        ? 'Tentative'
+        ? `Tentative${portionLabel ? ` (${portionLabel})` : ''}`
         : undefined
 
   // Additive, not a replacement: the tooltip above already carries more
@@ -3937,17 +4249,29 @@ function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCal
   // the gaps too, without needing to know the hatch's own colour in advance.
   const hatchedText = booking?.status === 'pencilled' || booking?.status === 'conflict'
 
+  // Testing feedback S — a half-day entry fills only its half of the cell
+  // (AM = left, PM = right) rather than the full solid/tinted background a
+  // full-day entry gets; the outline still runs the whole cell so the
+  // entry itself still reads as "one thing", just half-filled.
+  function halfFillBackground(color: string): string {
+    return halfDay === 'am' ? `linear-gradient(to right, ${color} 50%, transparent 50%)` : `linear-gradient(to right, transparent 50%, ${color} 50%)`
+  }
+  const availableBackground = !booking && unavailable ? (halfDay ? halfFillBackground('var(--danger-bg)') : 'var(--danger-bg)') : !booking && tentative ? (halfDay ? halfFillBackground('var(--attention-bg)') : 'var(--attention-bg)') : undefined
+
   return (
     <div
       title={title}
-      onClick={() => booking && onOpenJob(booking.job_id)}
+      onClick={() => {
+        if (booking) onOpenJob(booking.job_id)
+        else if (unavailable || tentative) onOpenAvailability(row.person_id)
+      }}
       style={{
         position: 'relative',
         height: 26,
         margin: '2px 1px',
         borderRadius: 4,
-        cursor: booking ? 'pointer' : 'default',
-        background: style ? style.background : unavailable ? 'var(--danger-bg)' : tentative ? 'var(--attention-bg)' : 'transparent',
+        cursor: booking || unavailable || tentative ? 'pointer' : 'default',
+        background: style ? style.background : (availableBackground ?? 'transparent'),
         opacity: style?.opacity,
         border: !booking && unavailable ? '1px solid var(--danger)' : !booking && tentative ? '1px solid var(--attention)' : undefined,
         boxSizing: 'border-box',
@@ -4111,10 +4435,14 @@ function LegendItem({ swatch, label }: { swatch: React.ReactNode; label: string 
 function ResourceCalendarContent({
   people,
   onOpenJob,
+  onOpenAvailability,
   onConvertEvent,
 }: {
   people: Person[]
   onOpenJob: (id: string) => void
+  // Testing feedback S — click-through parity with onOpenJob, for an
+  // unavailability/holiday cell instead of a booked-job cell.
+  onOpenAvailability: (personId: string) => void
   onConvertEvent: (event: ProspectiveEvent) => void
 }) {
   const [mode, setMode] = useState<TeamMode>('month')
@@ -4321,7 +4649,7 @@ function ResourceCalendarContent({
                 const inEvent = events.find((e) => e.date_start <= iso && e.date_end >= iso)
                 return (
                   <div key={iso} style={{ borderBottom: '1px solid var(--line)', borderRight: '1px solid #F0EFEA', background: inEvent ? 'var(--primary-tint)' : undefined }}>
-                    <ResourceCalendarCell row={row} date={date} mode={mode} onOpenJob={onOpenJob} />
+                    <ResourceCalendarCell row={row} date={date} mode={mode} onOpenJob={onOpenJob} onOpenAvailability={onOpenAvailability} />
                   </div>
                 )
               })}
@@ -4651,8 +4979,16 @@ function PersonForm({
 
   async function submit() {
     setError(undefined)
-    if (!firstName || !lastName || !email) {
-      setError('First name, last name, and email are required.')
+    if (!firstName || !lastName) {
+      setError('First name and last name are required.')
+      return
+    }
+    // Testing feedback Y — email is no longer a hard requirement on its
+    // own; a phone number is an equally valid way to be reachable. Backend
+    // enforces the same "at least one" rule (CreatePerson/UpdatePerson),
+    // this is just the same check surfaced before a round trip.
+    if (!email && !phone) {
+      setError('Provide an email or a phone number.')
       return
     }
 
@@ -4663,7 +4999,7 @@ function PersonForm({
         ...base,
         first_name: firstName,
         last_name: lastName,
-        email,
+        email: email || undefined,
         phone: phone || undefined,
         base_location: baseLocation || undefined,
         employment_type: employmentType,
@@ -4835,6 +5171,7 @@ const AVAILABILITY_TYPE_LABEL: Record<AvailabilityType, string> = {
   annual_leave: 'Holiday',
   sick: 'Sick',
   toil: 'TOIL',
+  bank_holiday: 'Bank Holiday',
   other: 'Other',
 }
 
@@ -4862,6 +5199,7 @@ function AvailabilityRow({ entry, onDelete }: { entry: Availability; onDelete: (
         <div style={{ fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink)' }}>
           {formatDate(entry.start_date)} – {formatDate(entry.end_date)}
           {entry.type && <span style={{ color: 'var(--ink-muted)' }}> · {AVAILABILITY_TYPE_LABEL[entry.type]}</span>}
+          {entry.day_portion !== 'full' && <span style={{ color: 'var(--ink-muted)' }}> · {entry.day_portion === 'am' ? 'AM only' : 'PM only'}</span>}
         </div>
         {entry.notes && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 2 }}>{entry.notes}</div>}
       </div>
@@ -4893,6 +5231,10 @@ function AddAvailabilityForm({
   const [endDate, setEndDate] = useState(initialEndDate ?? todayISO())
   const [status, setStatus] = useState<AvailabilityStatus>('unavailable')
   const [type, setType] = useState<AvailabilityType | ''>('')
+  // Testing feedback S — half-day (AM/PM-only) entries, applied to the
+  // whole date range same as status/type. Only meaningful on the two
+  // "away" statuses — Available has nothing to be half of.
+  const [dayPortion, setDayPortion] = useState<AvailabilityDayPortion>('full')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
@@ -4908,6 +5250,7 @@ function AddAvailabilityForm({
         end_date: endDate,
         status,
         type: status === 'unavailable' && type ? type : undefined,
+        day_portion: status !== 'available' ? dayPortion : undefined,
         notes: notes || undefined,
       })
       onSaved()
@@ -4945,7 +5288,18 @@ function AddAvailabilityForm({
               <option value="annual_leave">Holiday</option>
               <option value="sick">Sick</option>
               <option value="toil">TOIL</option>
+              <option value="bank_holiday">Bank Holiday</option>
               <option value="other">Other</option>
+            </select>
+          </label>
+        )}
+        {status !== 'available' && (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+            <span style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }}>Day</span>
+            <select value={dayPortion} onChange={(e) => setDayPortion(e.target.value as AvailabilityDayPortion)} style={inputStyle}>
+              <option value="full">Full day</option>
+              <option value="am">AM only</option>
+              <option value="pm">PM only</option>
             </select>
           </label>
         )}
@@ -5381,12 +5735,32 @@ function PersonDetail({ person, roles, onBack, reloadPeople }: { person: Person;
   )
 }
 
-function CrewContent({ people, roles, reloadPeople }: { people: Person[]; roles: Role[]; reloadPeople: () => void }) {
+function CrewContent({
+  people,
+  roles,
+  reloadPeople,
+  targetPersonId,
+  onConsumedTarget,
+}: {
+  people: Person[]
+  roles: Role[]
+  reloadPeople: () => void
+  // Testing feedback S — one-shot override from Team view's Availability
+  // click-through, same shape as Planner's own targetReqId/onConsumedTarget.
+  targetPersonId?: string
+  onConsumedTarget?: () => void
+}) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<(typeof CREW_FILTERS)[number]['key']>('all')
   const [discipline, setDiscipline] = useState<string>('all')
   const [selectedPersonId, setSelectedPersonId] = useState<string | undefined>(undefined)
   const [creating, setCreating] = useState(false)
+
+  useEffect(() => {
+    if (!targetPersonId) return
+    setSelectedPersonId(targetPersonId)
+    onConsumedTarget?.()
+  }, [targetPersonId])
 
   const { categories: disciplineCategories, hasOther: disciplineHasOther } = useMemo(() => disciplineBuckets(people), [people])
   const disciplineCategorySet = useMemo(() => new Set(disciplineCategories), [disciplineCategories])
@@ -6182,6 +6556,11 @@ export function RaltoDesktopApp() {
   const [selectedPlannerJobId, setSelectedPlannerJobId] = useState<string | undefined>(undefined)
   const [plannerTargetReqId, setPlannerTargetReqId] = useState<string | undefined>(undefined)
   const [jobPrefill, setJobPrefill] = useState<JobCreatePrefill | undefined>(undefined)
+  // Testing feedback S — one-shot navigation target, same pattern as
+  // plannerTargetReqId: Team view's Availability click-through jumps to
+  // that person's Crew detail (which opens on its Availability tab by
+  // default already).
+  const [crewTargetPersonId, setCrewTargetPersonId] = useState<string | undefined>(undefined)
 
   const { summaries, reload: reloadSummaries } = useJobSummaries()
   const { data: clientsList, reload: reloadClients } = useClients()
@@ -6212,6 +6591,14 @@ export function RaltoDesktopApp() {
   const openJobFromCalendar = (jobId: string) => {
     setSelectedPlannerJobId(jobId)
     setActive('planner')
+  }
+
+  // Testing feedback S: clicking a Job in Team view already jumps to that
+  // Job (openJobFromCalendar above) — this is the same for an
+  // unavailability/holiday entry, jumping to the person it belongs to.
+  const openPersonFromTeam = (personId: string) => {
+    setCrewTargetPersonId(personId)
+    setActive('crew')
   }
 
   // Testing feedback item A: Today's job cards had no click handler at
@@ -6293,7 +6680,7 @@ export function RaltoDesktopApp() {
       <Sidebar active={active} onSelect={setActive} />
       {active === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} onOpenJob={openJobFromToday} />}
       {active === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
-      {active === 'team' && <ResourceCalendarContent people={people} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
+      {active === 'team' && <ResourceCalendarContent people={people} onOpenJob={openJobFromCalendar} onOpenAvailability={openPersonFromTeam} onConvertEvent={convertEventToJob} />}
       {active === 'jobs' && (
         <JobsContent
           summaries={summaries}
@@ -6324,7 +6711,15 @@ export function RaltoDesktopApp() {
           onConsumedTarget={() => setPlannerTargetReqId(undefined)}
         />
       )}
-      {active === 'crew' && <CrewContent people={people} roles={rolesList} reloadPeople={reloadPeople} />}
+      {active === 'crew' && (
+        <CrewContent
+          people={people}
+          roles={rolesList}
+          reloadPeople={reloadPeople}
+          targetPersonId={crewTargetPersonId}
+          onConsumedTarget={() => setCrewTargetPersonId(undefined)}
+        />
+      )}
       {active === 'archive' && <ArchiveContent summaries={summaries} clients={clients} people={people} reloadSummaries={reloadSummaries} />}
       {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} vehicles={vehiclesList} reloadVehicles={reloadVehicles} />}
     </div>

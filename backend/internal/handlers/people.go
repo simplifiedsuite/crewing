@@ -126,6 +126,25 @@ func nilIfEmpty(s *string) *string {
 	return s
 }
 
+// emailOrNil — testing feedback Y: an empty email must reach Postgres as
+// NULL, never "". people.email keeps its UNIQUE(lower(email)) index
+// (0005_case_insensitive_email.sql), which allows any number of NULLs but
+// would reject a second person with the literal empty string.
+func emailOrNil(email string) *string {
+	if email == "" {
+		return nil
+	}
+	return &email
+}
+
+// hasContactInfo — testing feedback Y: email is no longer required if a
+// phone number is present, but a person needs at least one way to be
+// reached, so this is the one thing CreatePerson/UpdatePerson still
+// enforce rather than allowing a fully contact-less record.
+func hasContactInfo(email string, phone *string) bool {
+	return email != "" || (phone != nil && *phone != "")
+}
+
 func (a *API) CreatePerson(w http.ResponseWriter, r *http.Request) {
 	var req personWriteRequest
 	if err := readJSON(r, &req); err != nil {
@@ -140,6 +159,10 @@ func (a *API) CreatePerson(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = normalizeEmail(req.Email)
 	req.OvertimeRuleID = nilIfEmpty(req.OvertimeRuleID)
+	if !hasContactInfo(req.Email, req.Phone) {
+		writeError(w, http.StatusBadRequest, "email or phone is required")
+		return
+	}
 	var p models.Person
 	err := scanPerson(a.DB.QueryRow(r.Context(),
 		`INSERT INTO people (first_name, last_name, email, phone, base_location, employment_type, status,
@@ -147,7 +170,7 @@ func (a *API) CreatePerson(w http.ResponseWriter, r *http.Request) {
 		                      phone_number, notification_channels, vehicle_registration, organisation_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		 RETURNING `+personSelectColumns,
-		req.FirstName, req.LastName, req.Email, req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
+		req.FirstName, req.LastName, emailOrNil(req.Email), req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
 		req.PreferredStatus, req.StandardRate, req.RateCurrency, req.OvertimeRuleID, req.Notes,
 		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, currentOrgID,
 	), &p)
@@ -167,6 +190,10 @@ func (a *API) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = normalizeEmail(req.Email)
 	req.OvertimeRuleID = nilIfEmpty(req.OvertimeRuleID)
+	if !hasContactInfo(req.Email, req.Phone) {
+		writeError(w, http.StatusBadRequest, "email or phone is required")
+		return
+	}
 	var p models.Person
 	err := scanPerson(a.DB.QueryRow(r.Context(),
 		`UPDATE people SET first_name = $1, last_name = $2, email = $3, phone = $4, base_location = $5,
@@ -174,7 +201,7 @@ func (a *API) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 		        overtime_rule_id = $11, notes = $12, phone_number = $13, notification_channels = $14, vehicle_registration = $15, updated_at = now()
 		 WHERE id = $16 AND organisation_id = $17
 		 RETURNING `+personSelectColumns,
-		req.FirstName, req.LastName, req.Email, req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
+		req.FirstName, req.LastName, emailOrNil(req.Email), req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
 		req.PreferredStatus, req.StandardRate, req.RateCurrency, req.OvertimeRuleID, req.Notes,
 		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, id, currentOrgID,
 	), &p)

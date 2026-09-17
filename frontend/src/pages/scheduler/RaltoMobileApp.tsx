@@ -198,7 +198,34 @@ function MatchingScreen({ jobName, req, onBack, onOffered }: { jobName: string; 
         ))}
       </CandidateGroup>
 
-      <CandidateGroup title="Unavailable / conflicted" tone="var(--danger)">
+      {pool.conflicted.length > 0 && (
+        <CandidateGroup title="Conflict — already booked" tone="var(--attention)">
+          {pool.conflicted.map((c) => (
+            <div key={c.person_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', borderTop: '1px solid var(--line)', background: 'var(--attention-bg)' }}>
+              <div>
+                <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 14.5, color: 'var(--ink)' }}>{c.name}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'var(--font-body)', fontSize: 12.5, color: 'var(--attention)', marginTop: 2 }}>
+                  <AlertTriangle size={11} /> Already booked on {c.conflict_job_name}
+                </div>
+              </div>
+              {offered.includes(c.person_id) ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'var(--font-body)', fontSize: 12.5, fontWeight: 600, color: 'var(--success)' }}>
+                  <Check size={14} /> Offered
+                </span>
+              ) : (
+                <button
+                  onClick={() => sendOffer(c.person_id)}
+                  style={{ background: '#fff', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 9, padding: '7px 12px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', flexShrink: 0 }}
+                >
+                  Offer anyway
+                </button>
+              )}
+            </div>
+          ))}
+        </CandidateGroup>
+      )}
+
+      <CandidateGroup title="Unavailable" tone="var(--danger)">
         {pool.unavailable.map((c) => (
           <div key={c.person_id} style={{ padding: '12px 20px', borderTop: '1px solid var(--line)', opacity: 0.6 }}>
             <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 14.5, color: 'var(--ink)' }}>{c.name}</div>

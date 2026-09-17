@@ -94,6 +94,8 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Get("/{id}/vehicles", api.ListJobVehicles)
 			r.Post("/{id}/vehicles", api.AssignVehicleToJob)
 			r.Delete("/{id}/vehicles/{vehicleId}", api.UnassignVehicleFromJob)
+			r.Get("/{id}/day-labels", api.ListJobDayLabels)
+			r.Put("/{id}/day-labels/{date}", api.SetJobDayLabel)
 		})
 
 		// Fleet vehicles (Settings) — separate from a crew member's own

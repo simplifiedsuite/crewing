@@ -29,12 +29,13 @@ type resourceCalendarBooking struct {
 }
 
 type resourceCalendarAvailability struct {
-	ID        string                    `json:"id"`
-	Status    models.AvailabilityStatus `json:"status"`
-	Type      *models.AvailabilityType  `json:"type,omitempty"`
-	StartDate string                    `json:"start_date"`
-	EndDate   string                    `json:"end_date"`
-	Notes     *string                   `json:"notes,omitempty"`
+	ID         string                        `json:"id"`
+	Status     models.AvailabilityStatus     `json:"status"`
+	Type       *models.AvailabilityType      `json:"type,omitempty"`
+	DayPortion models.AvailabilityDayPortion `json:"day_portion"`
+	StartDate  string                        `json:"start_date"`
+	EndDate    string                        `json:"end_date"`
+	Notes      *string                       `json:"notes,omitempty"`
 }
 
 type resourceCalendarRow struct {
@@ -145,7 +146,7 @@ func (a *API) GetResourceCalendar(w http.ResponseWriter, r *http.Request) {
 	bookingRows.Close()
 
 	availabilityRows, err := a.DB.Query(r.Context(), `
-		SELECT person_id, id, status, type, start_date, end_date, notes
+		SELECT person_id, id, status, type, day_portion, start_date, end_date, notes
 		FROM availability
 		WHERE person_id = ANY($1::uuid[]) AND organisation_id = $4 AND start_date <= $3 AND end_date >= $2
 		ORDER BY start_date`,
@@ -157,7 +158,7 @@ func (a *API) GetResourceCalendar(w http.ResponseWriter, r *http.Request) {
 	for availabilityRows.Next() {
 		var personID string
 		var av resourceCalendarAvailability
-		if err := availabilityRows.Scan(&personID, &av.ID, &av.Status, &av.Type, &av.StartDate, &av.EndDate, &av.Notes); err != nil {
+		if err := availabilityRows.Scan(&personID, &av.ID, &av.Status, &av.Type, &av.DayPortion, &av.StartDate, &av.EndDate, &av.Notes); err != nil {
 			availabilityRows.Close()
 			writeError(w, http.StatusInternalServerError, "failed to load resource calendar")
 			return

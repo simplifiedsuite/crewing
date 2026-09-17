@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -166,7 +167,14 @@ type candidate struct {
 	PreferredStatus string   `json:"preferred_status"`
 	StandardRate    *float64 `json:"standard_rate,omitempty"`
 	RateCurrency    *string  `json:"rate_currency,omitempty"`
-	Reason          *string  `json:"reason,omitempty"` // set for unavailable candidates
+	Reason          *string  `json:"reason,omitempty"` // set for unavailable/conflicted candidates
+	// ConflictJobID/ConflictJobName — testing feedback O/Z: which other Job
+	// this person is already booked on, set only for the Conflicted bucket
+	// below. Lets the scheduler see (and click through to) the clashing Job
+	// instead of just "Conflict — already booked these dates" with no
+	// indication of which job that is.
+	ConflictJobID   *string `json:"conflict_job_id,omitempty"`
+	ConflictJobName *string `json:"conflict_job_name,omitempty"`
 }
 
 // alreadyAskedEntry is one prior ask against this job — either a formal
@@ -186,9 +194,16 @@ type alreadyAskedGroup struct {
 }
 
 type candidateGroups struct {
-	Suitable     []candidate       `json:"suitable"`
-	Possible     []candidate       `json:"possible"`
-	Unavailable  []candidate       `json:"unavailable"`
+	Suitable    []candidate `json:"suitable"`
+	Possible    []candidate `json:"possible"`
+	Unavailable []candidate `json:"unavailable"`
+	// Conflicted — testing feedback Z: a person already booked on another
+	// Job with overlapping dates (a travel-day clash) is no longer folded
+	// into Unavailable. That bucket stays a real block (an explicit
+	// Marked-unavailable day off), so this is deliberately a separate list
+	// the frontend renders with a warning, not a lockout — Pencil/Offer
+	// stay clickable here, unlike Unavailable.
+	Conflicted   []candidate       `json:"conflicted"`
 	AlreadyAsked alreadyAskedGroup `json:"already_asked"`
 }
 
@@ -214,13 +229,19 @@ func (a *API) ListCandidatesForJobRequirement(w http.ResponseWriter, r *http.Req
 		         WHERE av.person_id = p.id AND av.status = 'unavailable' AND av.organisation_id = $4
 		           AND av.start_date <= $3 AND av.end_date >= $2
 		       ) AS marked_unavailable,
-		       EXISTS (
-		         SELECT 1 FROM bookings b
-		         WHERE b.person_id = p.id AND b.status IN ('offered', 'confirmed') AND b.organisation_id = $4
-		           AND b.start_date <= $3 AND b.end_date >= $2
-		       ) AS already_booked
+		       conflict.job_id, conflict.job_name
 		FROM people p
 		JOIN person_roles pr ON pr.person_id = p.id AND pr.organisation_id = $4
+		LEFT JOIN LATERAL (
+		         SELECT j.id AS job_id, j.name AS job_name
+		         FROM bookings b
+		         JOIN job_requirements jr2 ON jr2.id = b.job_requirement_id
+		         JOIN jobs j ON j.id = jr2.job_id
+		         WHERE b.person_id = p.id AND b.status IN ('offered', 'confirmed') AND b.organisation_id = $4
+		           AND b.start_date <= $3 AND b.end_date >= $2
+		         ORDER BY b.start_date
+		         LIMIT 1
+		       ) conflict ON true
 		WHERE pr.role_id = $1 AND p.status = 'active' AND p.organisation_id = $4
 		ORDER BY p.preferred_status, name`,
 		roleID, startDate, endDate, currentOrgID,
@@ -235,6 +256,7 @@ func (a *API) ListCandidatesForJobRequirement(w http.ResponseWriter, r *http.Req
 		Suitable:    []candidate{},
 		Possible:    []candidate{},
 		Unavailable: []candidate{},
+		Conflicted:  []candidate{},
 		AlreadyAsked: alreadyAskedGroup{
 			AwaitingResponse: []alreadyAskedEntry{},
 			Declined:         []alreadyAskedEntry{},
@@ -242,9 +264,9 @@ func (a *API) ListCandidatesForJobRequirement(w http.ResponseWriter, r *http.Req
 	}
 	for rows.Next() {
 		var c candidate
-		var markedUnavailable, alreadyBooked bool
+		var markedUnavailable bool
 		if err := rows.Scan(&c.PersonID, &c.Name, &c.BaseLocation, &c.PreferredStatus, &c.StandardRate, &c.RateCurrency,
-			&markedUnavailable, &alreadyBooked); err != nil {
+			&markedUnavailable, &c.ConflictJobID, &c.ConflictJobName); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to find candidates")
 			return
 		}
@@ -253,10 +275,18 @@ func (a *API) ListCandidatesForJobRequirement(w http.ResponseWriter, r *http.Req
 			reason := "Marked unavailable these dates"
 			c.Reason = &reason
 			groups.Unavailable = append(groups.Unavailable, c)
-		case alreadyBooked:
-			reason := "Conflict — already booked these dates"
+		case c.ConflictJobID != nil:
+			// Testing feedback Z: softened from a hard block (used to land
+			// in Unavailable with no Pencil/Offer buttons at all) to a
+			// warned-but-bookable bucket — a travel-day double-booking is
+			// the scheduler's informed call to make, not something the UI
+			// should force them to engineer dates around. O: the job name
+			// is already fetched above, so the frontend can show (and link
+			// to) exactly which Job is clashing rather than a bare
+			// "already booked" with no indication of which one.
+			reason := fmt.Sprintf("Already booked on %s", *c.ConflictJobName)
 			c.Reason = &reason
-			groups.Unavailable = append(groups.Unavailable, c)
+			groups.Conflicted = append(groups.Conflicted, c)
 		case c.PreferredStatus == string(models.PreferredStatusPreferred) || c.PreferredStatus == string(models.PreferredStatusApproved):
 			groups.Suitable = append(groups.Suitable, c)
 		default:

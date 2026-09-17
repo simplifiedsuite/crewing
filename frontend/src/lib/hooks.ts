@@ -4,6 +4,7 @@ import type {
   Availability,
   AvailabilityStatus,
   AvailabilityType,
+  AvailabilityDayPortion,
   Booking,
   CandidateGroups,
   Client,
@@ -14,6 +15,7 @@ import type {
   EmploymentType,
   Job,
   JobCommitment,
+  JobDayLabel,
   JobRequirementWithCounts,
   JobStatus,
   OperationalAlert,
@@ -129,6 +131,39 @@ export function assignVehicleToJob(jobId: string, vehicleId: string) {
 
 export function unassignVehicleFromJob(jobId: string, vehicleId: string) {
   return api.delete(`/jobs/${jobId}/vehicles/${vehicleId}`)
+}
+
+// useJobDayLabels — testing feedback R: what each day within a Job means
+// (e.g. "Rig", "Match day"), keyed by date so callers can look one up with
+// a plain object index rather than scanning the array each time.
+export function useJobDayLabels(jobId: string | undefined) {
+  const [byDate, setByDate] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(true)
+
+  const reload = useCallback(() => {
+    if (!jobId) {
+      setByDate({})
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    api
+      .get<JobDayLabel[]>(`/jobs/${jobId}/day-labels`)
+      .then((labels) => setByDate(Object.fromEntries(labels.map((l) => [l.date, l.label]))))
+      .finally(() => setLoading(false))
+  }, [jobId])
+
+  useEffect(() => {
+    reload()
+  }, [reload])
+
+  return { byDate, loading, reload }
+}
+
+// setJobDayLabel — an empty label clears it (see SetJobDayLabel
+// server-side): same call either way, no separate delete endpoint to call.
+export function setJobDayLabel(jobId: string, date: string, label: string) {
+  return api.put<JobDayLabel>(`/jobs/${jobId}/day-labels/${date}`, { label })
 }
 
 export function useOvertimeRules() {
@@ -368,6 +403,14 @@ export function createProspectiveEvent(input: { name: string; date_start: string
   return api.post('/prospective-events', input)
 }
 
+// updateProspectiveEvent — testing feedback V: the backend has supported a
+// full update since ProspectiveEvent was first built (UpdateProspectiveEvent
+// in prospective_events.go, PUT /prospective-events/{id}), but nothing on
+// the frontend ever called it — editing dates meant delete-and-recreate.
+export function updateProspectiveEvent(id: string, input: { name: string; date_start: string; date_end: string; client_id?: string; notes?: string }) {
+  return api.put<ProspectiveEvent>(`/prospective-events/${id}`, input)
+}
+
 export function dropProspectiveEvent(id: string) {
   return api.post(`/prospective-events/${id}/drop`)
 }
@@ -424,6 +467,7 @@ export function useCandidates(requirementId: string | undefined) {
     suitable: [],
     possible: [],
     unavailable: [],
+    conflicted: [],
     already_asked: { awaiting_response: [], declined: [] },
   })
   const [loading, setLoading] = useState(true)
@@ -561,7 +605,7 @@ export function useScheduleItHistory(personId: string | undefined) {
 
 export function createAvailability(
   personId: string,
-  input: { start_date: string; end_date: string; status: AvailabilityStatus; type?: AvailabilityType; notes?: string },
+  input: { start_date: string; end_date: string; status: AvailabilityStatus; type?: AvailabilityType; day_portion?: AvailabilityDayPortion; notes?: string },
 ) {
   return api.post(`/people/${personId}/availability`, input)
 }
@@ -583,7 +627,9 @@ export function resolveAlert(id: string) {
 export interface PersonWriteInput {
   first_name: string
   last_name: string
-  email: string
+  // email — testing feedback Y: not required on its own; the backend
+  // rejects only when both email and phone are absent.
+  email?: string
   phone?: string
   base_location?: string
   employment_type: EmploymentType

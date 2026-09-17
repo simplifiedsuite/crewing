@@ -153,6 +153,16 @@ type JobContact struct {
 	Phone     *string `json:"phone,omitempty"`
 }
 
+// JobDayLabel — testing feedback R: what a specific day within a Job's own
+// date range means (e.g. "Rig", "Match day", "Get-out"), independent of
+// who's booked that day. See migrations/0020_job_day_labels.sql.
+type JobDayLabel struct {
+	ID    string `json:"id"`
+	JobID string `json:"job_id"`
+	Date  string `json:"date"`
+	Label string `json:"label"`
+}
+
 // --- ProspectiveEvent ---
 
 type ProspectiveEventStatus string
@@ -235,10 +245,14 @@ const (
 )
 
 type Person struct {
-	ID                   string          `json:"id"`
-	FirstName            string          `json:"first_name"`
-	LastName             string          `json:"last_name"`
-	Email                string          `json:"email"`
+	ID        string `json:"id"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	// Email — testing feedback Y: not required if Phone is present (see
+	// CreatePerson/UpdatePerson's own validation). people.email dropped its
+	// NOT NULL for this; the UNIQUE(lower(email)) index is unaffected,
+	// since Postgres never treats two NULLs as a duplicate.
+	Email                *string         `json:"email,omitempty"`
 	Phone                *string         `json:"phone,omitempty"`
 	BaseLocation         *string         `json:"base_location,omitempty"`
 	EmploymentType       EmploymentType  `json:"employment_type"`
@@ -411,7 +425,16 @@ const (
 	AvailabilityTypeAnnualLeave AvailabilityType = "annual_leave"
 	AvailabilityTypeSick        AvailabilityType = "sick"
 	AvailabilityTypeToil        AvailabilityType = "toil"
+	AvailabilityTypeBankHoliday AvailabilityType = "bank_holiday"
 	AvailabilityTypeOther       AvailabilityType = "other"
+)
+
+type AvailabilityDayPortion string
+
+const (
+	AvailabilityDayPortionFull AvailabilityDayPortion = "full"
+	AvailabilityDayPortionAM   AvailabilityDayPortion = "am"
+	AvailabilityDayPortionPM   AvailabilityDayPortion = "pm"
 )
 
 type Availability struct {
@@ -421,7 +444,11 @@ type Availability struct {
 	EndDate   string             `json:"end_date"`
 	Status    AvailabilityStatus `json:"status"`
 	Type      *AvailabilityType  `json:"type,omitempty"`
-	Notes     *string            `json:"notes,omitempty"`
+	// DayPortion — testing feedback S: a second axis, same pattern as
+	// Commitment (see migrations/0004_pencil.sql) — applies to the whole
+	// entry's date range. Defaults to 'full' (see migrations/0019).
+	DayPortion AvailabilityDayPortion `json:"day_portion"`
+	Notes      *string                `json:"notes,omitempty"`
 }
 
 type AvailabilityRequestStatus string

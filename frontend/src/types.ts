@@ -22,7 +22,9 @@ export interface Person {
   id: string
   first_name: string
   last_name: string
-  email: string
+  // email — testing feedback Y: not required if phone is present (backend
+  // enforces "at least one of the two", not "email always").
+  email?: string
   phone?: string
   base_location?: string
   employment_type: EmploymentType
@@ -245,6 +247,15 @@ export interface JobContact {
   phone?: string
 }
 
+// JobDayLabel — testing feedback R: what a specific day within a Job's own
+// date range means (e.g. "Rig", "Match day"), independent of who's booked.
+export interface JobDayLabel {
+  id: string
+  job_id: string
+  date: string
+  label: string
+}
+
 export interface JobRequirementWithCounts {
   id: string
   job_id: string
@@ -305,6 +316,10 @@ export interface Candidate {
   standard_rate?: number
   rate_currency?: string
   reason?: string
+  // conflict_job_id/conflict_job_name — only set for the conflicted bucket
+  // below: which other Job this person is already booked on.
+  conflict_job_id?: string
+  conflict_job_name?: string
 }
 
 export interface AlreadyAskedEntry {
@@ -324,6 +339,10 @@ export interface CandidateGroups {
   suitable: Candidate[]
   possible: Candidate[]
   unavailable: Candidate[]
+  // conflicted — testing feedback Z: a double-booking (travel-day clash)
+  // is a warning, not a hard block, so it's kept separate from
+  // unavailable (which stays a real lockout — an explicit day off).
+  conflicted: Candidate[]
   already_asked: AlreadyAskedGroup
 }
 
@@ -380,7 +399,11 @@ export interface ProspectiveEvent {
 }
 
 export type AvailabilityStatus = 'available' | 'unavailable' | 'tentative' | 'booked'
-export type AvailabilityType = 'annual_leave' | 'sick' | 'toil' | 'other'
+export type AvailabilityType = 'annual_leave' | 'sick' | 'toil' | 'bank_holiday' | 'other'
+
+// day_portion — testing feedback S: a second axis alongside status/type,
+// applying to the whole entry's date range. Defaults to 'full'.
+export type AvailabilityDayPortion = 'full' | 'am' | 'pm'
 
 export interface Availability {
   id: string
@@ -389,6 +412,7 @@ export interface Availability {
   end_date: string
   status: AvailabilityStatus
   type?: AvailabilityType
+  day_portion: AvailabilityDayPortion
   notes?: string
 }
 
@@ -436,6 +460,7 @@ export interface ResourceCalendarAvailabilityEntry {
   id: string
   status: AvailabilityStatus
   type?: AvailabilityType
+  day_portion: AvailabilityDayPortion
   start_date: string
   end_date: string
   notes?: string

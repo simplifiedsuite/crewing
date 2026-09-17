@@ -17,7 +17,7 @@ import (
 func (a *API) ListAvailabilityForPerson(w http.ResponseWriter, r *http.Request) {
 	personID := chi.URLParam(r, "id")
 	rows, err := a.DB.Query(r.Context(),
-		`SELECT id, person_id, start_date, end_date, status, type, notes FROM availability WHERE person_id = $1 AND organisation_id = $2 ORDER BY start_date`,
+		`SELECT id, person_id, start_date, end_date, status, type, day_portion, notes FROM availability WHERE person_id = $1 AND organisation_id = $2 ORDER BY start_date`,
 		personID, currentOrgID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list availability")
@@ -28,7 +28,7 @@ func (a *API) ListAvailabilityForPerson(w http.ResponseWriter, r *http.Request) 
 	entries := []models.Availability{}
 	for rows.Next() {
 		var av models.Availability
-		if err := rows.Scan(&av.ID, &av.PersonID, &av.StartDate, &av.EndDate, &av.Status, &av.Type, &av.Notes); err != nil {
+		if err := rows.Scan(&av.ID, &av.PersonID, &av.StartDate, &av.EndDate, &av.Status, &av.Type, &av.DayPortion, &av.Notes); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list availability")
 			return
 		}
@@ -42,7 +42,11 @@ type availabilityWriteRequest struct {
 	EndDate   string                    `json:"end_date"`
 	Status    models.AvailabilityStatus `json:"status"`
 	Type      *models.AvailabilityType  `json:"type"`
-	Notes     *string                   `json:"notes"`
+	// DayPortion — testing feedback S. Empty defaults to Full, matching the
+	// column's own DEFAULT 'full' (a caller that predates this field, or
+	// simply doesn't care, gets the same full-day behaviour as before).
+	DayPortion models.AvailabilityDayPortion `json:"day_portion"`
+	Notes      *string                       `json:"notes"`
 }
 
 func (a *API) CreateAvailability(w http.ResponseWriter, r *http.Request) {
@@ -58,12 +62,15 @@ func (a *API) CreateAvailability(w http.ResponseWriter, r *http.Request) {
 	if req.Status != models.AvailabilityStatusUnavailable {
 		req.Type = nil
 	}
+	if req.DayPortion == "" {
+		req.DayPortion = models.AvailabilityDayPortionFull
+	}
 	var av models.Availability
 	err := a.DB.QueryRow(r.Context(),
-		`INSERT INTO availability (person_id, start_date, end_date, status, type, notes, organisation_id) VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, person_id, start_date, end_date, status, type, notes`,
-		personID, req.StartDate, req.EndDate, req.Status, req.Type, req.Notes, currentOrgID,
-	).Scan(&av.ID, &av.PersonID, &av.StartDate, &av.EndDate, &av.Status, &av.Type, &av.Notes)
+		`INSERT INTO availability (person_id, start_date, end_date, status, type, day_portion, notes, organisation_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING id, person_id, start_date, end_date, status, type, day_portion, notes`,
+		personID, req.StartDate, req.EndDate, req.Status, req.Type, req.DayPortion, req.Notes, currentOrgID,
+	).Scan(&av.ID, &av.PersonID, &av.StartDate, &av.EndDate, &av.Status, &av.Type, &av.DayPortion, &av.Notes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create availability entry")
 		return

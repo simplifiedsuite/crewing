@@ -38,13 +38,21 @@ func (a *API) notifyPerson(ctx context.Context, personID string, notifType model
 		return nil
 	}
 
-	var email, firstName string
+	// email is nullable (testing feedback Y: phone-only crew members) — no
+	// email on file means no email channel to send through, same as if
+	// a.Notify itself were unconfigured. The in-app delivery above already
+	// recorded the notification either way.
+	var email *string
+	var firstName string
 	if err := a.DB.QueryRow(ctx, `SELECT email, first_name FROM people WHERE id = $1`, personID).Scan(&email, &firstName); err != nil {
 		return err
 	}
+	if email == nil {
+		return nil
+	}
 
 	status := "sent"
-	sendErr := a.Notify.SendEmail(email, firstName, emailSubject, emailBody)
+	sendErr := a.Notify.SendEmail(*email, firstName, emailSubject, emailBody)
 	if sendErr != nil {
 		status = "failed"
 	}
