@@ -227,28 +227,16 @@ func (a *API) ListCompletedJobsForPerson(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, jobs)
 }
 
-func (a *API) DeleteJob(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	tag, err := a.DB.Exec(r.Context(), `DELETE FROM jobs WHERE id = $1 AND organisation_id = $2`, id, currentOrgID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to delete job (it may still have requirements or bookings)")
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "job not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
 // SoftDeleteJob is the testing-feedback "Delete cancelled jobs into an
-// archive" action — deliberately not the hard DeleteJob above. Only a
-// Cancelled job can be soft-deleted (the WHERE clause enforces it, not
-// just the frontend button's own gating): this isn't general-purpose job
-// deletion, just a way to clear out jobs already cancelled and cluttering
-// the UI. Sets deleted_at/deleted_by; status is untouched (stays
-// Cancelled) and no row is removed, so Restore below is a cheap, safe
-// undo.
+// archive" action — deliberately a soft delete, never a row removal (a
+// prior hard-delete endpoint here was removed as dead code: unreachable
+// from the frontend and sitting right next to the feature that exists
+// specifically to avoid hard deletes). Only a Cancelled job can be
+// soft-deleted (the WHERE clause enforces it, not just the frontend
+// button's own gating): this isn't general-purpose job deletion, just a
+// way to clear out jobs already cancelled and cluttering the UI. Sets
+// deleted_at/deleted_by; status is untouched (stays Cancelled) and no row
+// is removed, so Restore below is a cheap, safe undo.
 func (a *API) SoftDeleteJob(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	staff, ok := staffClaimsFromContext(r)
