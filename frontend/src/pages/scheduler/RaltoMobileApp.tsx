@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   Calendar,
@@ -74,6 +75,30 @@ type TabKey = (typeof TABS)[number]['key']
 // reached via the button next to Sign out instead, same place desktop
 // keeps the two together at the bottom of its own sidebar.
 type ViewKey = TabKey | 'settings'
+
+// Testing feedback Q — same fix as RaltoDesktopApp: real URL paths for the
+// tab bar (and Planner's selected Job) instead of plain useState, so Back
+// steps through views before leaving Crewing. No 'crew'/'team'/'archive'
+// tabs exist on mobile, so unlike desktop's NAV_PATH there's no /crew
+// collision to route around.
+const VIEW_PATH: Record<ViewKey, string> = {
+  today: '/today',
+  calendar: '/calendar',
+  jobs: '/jobs',
+  planner: '/planner',
+  settings: '/settings',
+}
+
+function viewFromPathname(pathname: string): ViewKey {
+  const segment = `/${pathname.split('/')[1] ?? ''}`
+  const match = (Object.entries(VIEW_PATH) as [ViewKey, string][]).find(([, path]) => path === segment)
+  return match ? match[0] : 'today'
+}
+
+function jobIdFromPathname(pathname: string): string | undefined {
+  const parts = pathname.split('/').filter(Boolean)
+  return parts[1] || undefined
+}
 
 const FALLBACK_CLIENT_COLORS = ['#453E96', '#F4511E', '#1B3A8C', '#006C35', '#E10600', '#005C30']
 
@@ -975,9 +1000,19 @@ function PlannerContent({ summaries, clients, people, selectedJobId, onSelectJob
 // ---------------------------------------------------------------------------
 
 export function RaltoMobileApp() {
-  const [view, setView] = useState<ViewKey>('today')
-  const [selectedPlannerJobId, setSelectedPlannerJobId] = useState<string | undefined>(undefined)
+  const location = useLocation()
+  const navigate = useNavigate()
+  const view = viewFromPathname(location.pathname)
+  const selectedPlannerJobId = view === 'planner' ? jobIdFromPathname(location.pathname) : undefined
   const { logout } = useStaffAuth()
+
+  useEffect(() => {
+    if (location.pathname === '/') navigate(VIEW_PATH.today, { replace: true })
+  }, [location.pathname, navigate])
+
+  const selectView = (key: ViewKey) => {
+    if (key !== view) navigate(VIEW_PATH[key])
+  }
 
   const { summaries, reload: reloadSummaries } = useJobSummaries()
   const { data: clientsList } = useClients()
@@ -992,8 +1027,7 @@ export function RaltoMobileApp() {
   const people = useMemo(() => indexById(peopleList), [peopleList])
 
   const openJobInPlanner = (jobId: string) => {
-    setSelectedPlannerJobId(jobId)
-    setView('planner')
+    navigate(`${VIEW_PATH.planner}/${jobId}`)
   }
 
   return (
@@ -1027,7 +1061,7 @@ export function RaltoMobileApp() {
             Settings (the Dakboard/iCal feed link included) was otherwise
             unreachable on mobile. */}
         <button
-          onClick={() => setView('settings')}
+          onClick={() => selectView('settings')}
           style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', color: view === 'settings' ? 'var(--primary)' : 'var(--ink-muted)', fontFamily: 'var(--font-body)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
         >
           <Settings size={13} /> Settings
@@ -1041,7 +1075,16 @@ export function RaltoMobileApp() {
         {view === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} />}
         {view === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobInPlanner} />}
         {view === 'jobs' && <JobsContent summaries={summaries} clients={clients} venues={venues} people={people} reloadSummaries={reloadSummaries} />}
-        {view === 'planner' && <PlannerContent summaries={summaries} clients={clients} people={people} selectedJobId={selectedPlannerJobId} onSelectJob={setSelectedPlannerJobId} reloadSummaries={reloadSummaries} />}
+        {view === 'planner' && (
+          <PlannerContent
+            summaries={summaries}
+            clients={clients}
+            people={people}
+            selectedJobId={selectedPlannerJobId}
+            onSelectJob={(id) => navigate(`${VIEW_PATH.planner}/${id}`)}
+            reloadSummaries={reloadSummaries}
+          />
+        )}
         {view === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} vehicles={vehiclesList} reloadVehicles={reloadVehicles} />}
       </div>
 
@@ -1050,7 +1093,7 @@ export function RaltoMobileApp() {
           const Icon = t.icon
           const active = view === t.key
           return (
-            <button key={t.key} onClick={() => setView(t.key)} style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+            <button key={t.key} onClick={() => selectView(t.key)} style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
               <Icon size={20} color={active ? 'var(--primary)' : 'var(--ink-muted)'} />
               <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, fontWeight: 600, color: active ? 'var(--primary)' : 'var(--ink-muted)' }}>{t.label}</span>
             </button>

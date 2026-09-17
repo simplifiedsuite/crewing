@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   Calendar,
@@ -178,6 +179,39 @@ const NAV_ITEMS = [
 ] as const
 
 type NavKey = (typeof NAV_ITEMS)[number]['key'] | 'settings'
+
+// Testing feedback Q — real browser history instead of in-memory tab state.
+// Every NavKey gets a real URL path so Back/Forward step through the app's
+// own views before ever leaving Crewing. 'crew' (the roster/directory tab)
+// maps to /roster rather than /crew — /crew/* is already claimed at the top
+// level (see App.tsx) for the structurally separate crew-persona shell, and
+// any path under it would never reach this app at all.
+const NAV_PATH: Record<NavKey, string> = {
+  today: '/today',
+  calendar: '/calendar',
+  team: '/team',
+  jobs: '/jobs',
+  planner: '/planner',
+  crew: '/roster',
+  archive: '/archive',
+  settings: '/settings',
+}
+
+function navKeyFromPathname(pathname: string): NavKey {
+  const segment = `/${pathname.split('/')[1] ?? ''}`
+  const match = (Object.entries(NAV_PATH) as [NavKey, string][]).find(([, path]) => path === segment)
+  return match ? match[0] : 'today'
+}
+
+// The second path segment doubles as the selected record's id for the three
+// tabs that navigate to a specific Job or person (Jobs, Planner, roster) —
+// e.g. /jobs/<uuid>. Anything else (search text, form fields, which
+// requirement is highlighted within a job) stays local component state,
+// per the batch's own "a keystroke obviously shouldn't" guidance.
+function idFromPathname(pathname: string): string | undefined {
+  const parts = pathname.split('/').filter(Boolean)
+  return parts[1] || undefined
+}
 
 const FALLBACK_CLIENT_COLORS = ['#453E96', '#F4511E', '#1B3A8C', '#006C35', '#E10600', '#005C30']
 
@@ -5795,28 +5829,23 @@ function CrewContent({
   people,
   roles,
   reloadPeople,
-  targetPersonId,
-  onConsumedTarget,
+  selectedPersonId,
+  onSelectPerson,
 }: {
   people: Person[]
   roles: Role[]
   reloadPeople: () => void
-  // Testing feedback S — one-shot override from Team view's Availability
-  // click-through, same shape as Planner's own targetReqId/onConsumedTarget.
-  targetPersonId?: string
-  onConsumedTarget?: () => void
+  // Testing feedback Q — lifted to the URL (see RaltoDesktopApp's own
+  // navigate calls) instead of local state, same controlled-selection shape
+  // JobsContent/PlannerContent already use for their own job selection, so
+  // Back/Forward steps through people the same way it does through Jobs.
+  selectedPersonId?: string
+  onSelectPerson: (id: string | undefined) => void
 }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<(typeof CREW_FILTERS)[number]['key']>('all')
   const [discipline, setDiscipline] = useState<string>('all')
-  const [selectedPersonId, setSelectedPersonId] = useState<string | undefined>(undefined)
   const [creating, setCreating] = useState(false)
-
-  useEffect(() => {
-    if (!targetPersonId) return
-    setSelectedPersonId(targetPersonId)
-    onConsumedTarget?.()
-  }, [targetPersonId])
 
   const { categories: disciplineCategories, hasOther: disciplineHasOther } = useMemo(() => disciplineBuckets(people), [people])
   const disciplineCategorySet = useMemo(() => new Set(disciplineCategories), [disciplineCategories])
@@ -5837,7 +5866,7 @@ function CrewContent({
         onSaved={(p) => {
           setCreating(false)
           reloadPeople()
-          setSelectedPersonId(p.id)
+          onSelectPerson(p.id)
         }}
       />
     )
@@ -5845,7 +5874,7 @@ function CrewContent({
 
   const selectedPerson = people.find((p) => p.id === selectedPersonId)
   if (selectedPerson) {
-    return <PersonDetail person={selectedPerson} roles={roles} onBack={() => setSelectedPersonId(undefined)} reloadPeople={reloadPeople} />
+    return <PersonDetail person={selectedPerson} roles={roles} onBack={() => onSelectPerson(undefined)} reloadPeople={reloadPeople} />
   }
 
   return (
@@ -5901,7 +5930,7 @@ function CrewContent({
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
         {filtered.map((p) => (
-          <PersonCard key={p.id} person={p} onClick={() => setSelectedPersonId(p.id)} />
+          <PersonCard key={p.id} person={p} onClick={() => onSelectPerson(p.id)} />
         ))}
         {filtered.length === 0 && <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px 0', fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink-muted)' }}>No one matches.</div>}
       </div>
@@ -6607,16 +6636,38 @@ export function SettingsContent({
 // ---------------------------------------------------------------------------
 
 export function RaltoDesktopApp() {
-  const [active, setActive] = useState<NavKey>('today')
-  const [selectedJobId, setSelectedJobId] = useState<string | undefined>(undefined)
-  const [selectedPlannerJobId, setSelectedPlannerJobId] = useState<string | undefined>(undefined)
+  // Testing feedback Q — navigation state lives in the URL (via react-router,
+  // already used one level up for the staff/crew split in App.tsx) instead
+  // of plain useState, so switching tabs or opening a specific Job/person
+  // pushes a real browser history entry and Back/Forward step through the
+  // app's own views before ever leaving Crewing. See NAV_PATH/
+  // navKeyFromPathname/idFromPathname above for the URL scheme.
+  const location = useLocation()
+  const navigate = useNavigate()
+  const active = navKeyFromPathname(location.pathname)
+  const recordId = idFromPathname(location.pathname)
+  const selectedJobId = active === 'jobs' ? recordId : undefined
+  const selectedPlannerJobId = active === 'planner' ? recordId : undefined
+  const selectedPersonId = active === 'crew' ? recordId : undefined
+
+  // Bare "/" (first load, or a manual visit to the site root) isn't one of
+  // NAV_PATH's own paths, so it'd otherwise render Today without the URL
+  // ever reflecting that — replace, not push, since this isn't a real user
+  // navigation to add to history.
+  useEffect(() => {
+    if (location.pathname === '/') navigate(NAV_PATH.today, { replace: true })
+  }, [location.pathname, navigate])
+
+  // Sidebar tabs that don't carry a specific record (Today/Calendar/Team/
+  // Archive/Settings, or re-clicking the tab you're already on) navigate
+  // straight to NAV_PATH; a no-op click doesn't push a redundant history
+  // entry.
+  const selectTab = (key: NavKey) => {
+    if (key !== active) navigate(NAV_PATH[key])
+  }
+
   const [plannerTargetReqId, setPlannerTargetReqId] = useState<string | undefined>(undefined)
   const [jobPrefill, setJobPrefill] = useState<JobCreatePrefill | undefined>(undefined)
-  // Testing feedback S — one-shot navigation target, same pattern as
-  // plannerTargetReqId: Team view's Availability click-through jumps to
-  // that person's Crew detail (which opens on its Availability tab by
-  // default already).
-  const [crewTargetPersonId, setCrewTargetPersonId] = useState<string | undefined>(undefined)
 
   const { summaries, reload: reloadSummaries } = useJobSummaries()
   const { data: clientsList, reload: reloadClients } = useClients()
@@ -6645,16 +6696,14 @@ export function RaltoDesktopApp() {
   }, [reloadSummaries])
 
   const openJobFromCalendar = (jobId: string) => {
-    setSelectedPlannerJobId(jobId)
-    setActive('planner')
+    navigate(`${NAV_PATH.planner}/${jobId}`)
   }
 
   // Testing feedback S: clicking a Job in Team view already jumps to that
   // Job (openJobFromCalendar above) — this is the same for an
   // unavailability/holiday entry, jumping to the person it belongs to.
   const openPersonFromTeam = (personId: string) => {
-    setCrewTargetPersonId(personId)
-    setActive('crew')
+    navigate(`${NAV_PATH.crew}/${personId}`)
   }
 
   // Testing feedback item A: Today's job cards had no click handler at
@@ -6663,18 +6712,17 @@ export function RaltoDesktopApp() {
   // tab's own list, not a crewing action against one specific role the
   // way Calendar's openJobFromCalendar is.
   const openJobFromToday = (jobId: string) => {
-    setSelectedJobId(jobId)
-    setActive('jobs')
+    navigate(`${NAV_PATH.jobs}/${jobId}`)
   }
 
   // Same handoff shape as openJobFromCalendar, extended to carry the
   // specific unfilled requirement a Jobs-screen role row was clicked for —
   // so Planner opens with that exact role selected, not just the job's
-  // first unfulfilled one.
+  // first unfulfilled one. reqId itself isn't part of the URL (see
+  // idFromPathname above) — it stays local one-shot state, same as before.
   const openRoleInPlanner = (jobId: string, reqId: string) => {
-    setSelectedPlannerJobId(jobId)
     setPlannerTargetReqId(reqId)
-    setActive('planner')
+    navigate(`${NAV_PATH.planner}/${jobId}`)
   }
 
   // Conversion is a thin layer on top of job creation (addendum v2 §3):
@@ -6690,8 +6738,7 @@ export function RaltoDesktopApp() {
       client_id: event.client_id,
       fromProspectiveEventId: event.id,
     })
-    setSelectedJobId(undefined)
-    setActive('jobs')
+    navigate(NAV_PATH.jobs)
   }
 
   // The app shell used to be a fixed 1240x800 "card" floating on a grey
@@ -6733,7 +6780,7 @@ export function RaltoDesktopApp() {
         input::placeholder { color: var(--ink-muted); opacity: 1; }
       `}</style>
 
-      <Sidebar active={active} onSelect={setActive} />
+      <Sidebar active={active} onSelect={selectTab} />
       {active === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} onOpenJob={openJobFromToday} />}
       {active === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobFromCalendar} onConvertEvent={convertEventToJob} />}
       {active === 'team' && <ResourceCalendarContent people={people} onOpenJob={openJobFromCalendar} onOpenAvailability={openPersonFromTeam} onConvertEvent={convertEventToJob} />}
@@ -6748,7 +6795,7 @@ export function RaltoDesktopApp() {
           roles={rolesList}
           vehiclesList={vehiclesList}
           selectedId={selectedJobId}
-          onSelect={setSelectedJobId}
+          onSelect={(id) => navigate(`${NAV_PATH.jobs}/${id}`)}
           reloadSummaries={reloadSummaries}
           reloadClients={reloadClients}
           prefill={jobPrefill}
@@ -6761,7 +6808,7 @@ export function RaltoDesktopApp() {
           summaries={summaries}
           clients={clients}
           selectedJobId={selectedPlannerJobId}
-          onSelectJob={setSelectedPlannerJobId}
+          onSelectJob={(id) => navigate(`${NAV_PATH.planner}/${id}`)}
           reloadSummaries={reloadSummaries}
           targetReqId={plannerTargetReqId}
           onConsumedTarget={() => setPlannerTargetReqId(undefined)}
@@ -6772,8 +6819,8 @@ export function RaltoDesktopApp() {
           people={people}
           roles={rolesList}
           reloadPeople={reloadPeople}
-          targetPersonId={crewTargetPersonId}
-          onConsumedTarget={() => setCrewTargetPersonId(undefined)}
+          selectedPersonId={selectedPersonId}
+          onSelectPerson={(id) => navigate(id ? `${NAV_PATH.crew}/${id}` : NAV_PATH.crew)}
         />
       )}
       {active === 'archive' && <ArchiveContent summaries={summaries} clients={clients} people={people} reloadSummaries={reloadSummaries} />}
