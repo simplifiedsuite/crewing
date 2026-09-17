@@ -3885,14 +3885,23 @@ function bookingCellStyle(booking: ResourceCalendarBooking): { background: strin
   return { background: color, opacity: 1 } // confirmed, complete
 }
 
+// activeBookingFor — the one place that decides which Booking (if any) is
+// live for a person on a given day, shared between the single-day cell
+// below and buildRowSegments' merge logic so the two can never disagree
+// about which booking "wins" a day a person happens to be double-booked
+// on. Array.find, not .filter()[0] — same first-match precedence, no
+// intermediate array.
+function activeBookingFor(row: ResourceCalendarRow, iso: string): ResourceCalendarBooking | undefined {
+  return row.bookings.find((b) => ACTIVE_BOOKING_STATUSES.has(b.status) && b.start_date <= iso && b.end_date >= iso)
+}
+
 // Cell precedence (addendum v2 §1): a Booking overlapping an Unavailable
 // Availability row is rendered as BOTH, flagged — never one picked over
 // the other, since that overlap is exactly the exception this view exists
 // to catch.
 function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCalendarRow; date: Date; mode: TeamMode; onOpenJob: (id: string) => void }) {
   const iso = dateISO(date)
-  const bookings = row.bookings.filter((b) => ACTIVE_BOOKING_STATUSES.has(b.status) && b.start_date <= iso && b.end_date >= iso)
-  const booking = bookings[0]
+  const booking = activeBookingFor(row, iso)
   const unavailable = row.availability.find((a) => a.status === 'unavailable' && a.start_date <= iso && a.end_date >= iso)
   const tentative = !unavailable && row.availability.find((a) => a.status === 'tentative' && a.start_date <= iso && a.end_date >= iso)
   // Two independent sources of "conflict": a booking directly marked
@@ -3970,6 +3979,122 @@ function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCal
           <AlertOctagon size={9} color="var(--danger)" />
         </span>
       )}
+    </div>
+  )
+}
+
+// Testing feedback "Merge multi-day bookings into one block": a row's
+// visible dates split into segments — either a single day (rendered
+// exactly as before, via ResourceCalendarCell, whether or not it happens
+// to carry a booking) or a run of 2+ *contiguous visible* days that
+// resolve to the very same Booking (activeBookingFor, matched by id).
+// Grouping is deliberately by booking identity, never by the rendered
+// colour/status — two different but adjacent bookings that happen to
+// share a status must stay separate cells, which is exactly why this
+// keys off booking.id rather than bookingCellStyle's output. A run is
+// clipped to whatever's actually in `dates` (Week/Fortnight can show only
+// part of a longer booking) — same clip-to-visible-range idea
+// CalendarContent's packRanges already uses for job bars.
+type RowSegment = { date: Date } | { dates: Date[]; booking: ResourceCalendarBooking }
+
+function buildRowSegments(row: ResourceCalendarRow, dates: Date[]): RowSegment[] {
+  const segments: RowSegment[] = []
+  let i = 0
+  while (i < dates.length) {
+    const booking = activeBookingFor(row, dateISO(dates[i]))
+    if (booking) {
+      const run = [dates[i]]
+      let j = i + 1
+      while (j < dates.length && activeBookingFor(row, dateISO(dates[j]))?.id === booking.id) {
+        run.push(dates[j])
+        j += 1
+      }
+      if (run.length > 1) {
+        segments.push({ dates: run, booking })
+        i = j
+        continue
+      }
+    }
+    segments.push({ date: dates[i] })
+    i += 1
+  }
+  return segments
+}
+
+// The merged block itself — one element spanning the run's full width, so
+// borderRadius only ever rounds the true start/end (there's no "middle"
+// to round) and there's no interior border between the merged days. A
+// Booking's status/colour is uniform across its own date range by
+// definition, so bookingCellStyle only needs to run once here — the one
+// thing that can still vary day-by-day within the run is an overlapping
+// Unavailable Availability entry, so the conflict flag/tooltip still
+// checks every day in the run, not just the first (same "never pick one
+// over the other" precedence ResourceCalendarCell applies per-day).
+function ResourceCalendarBookingRun({
+  row,
+  runDates,
+  booking,
+  mode,
+  onOpenJob,
+}: {
+  row: ResourceCalendarRow
+  runDates: Date[]
+  booking: ResourceCalendarBooking
+  mode: TeamMode
+  onOpenJob: (id: string) => void
+}) {
+  const isos = runDates.map(dateISO)
+  const anyUnavailable = row.availability.some((a) => a.status === 'unavailable' && isos.some((iso) => a.start_date <= iso && a.end_date >= iso))
+  const conflict = booking.status === 'conflict' || anyUnavailable
+
+  const style = bookingCellStyle(booking)
+  const showInline = mode === 'week' || mode === 'fortnight'
+  const inlineText = showInline ? booking.job_name : undefined
+  const hatchedText = booking.status === 'pencilled' || booking.status === 'conflict'
+
+  return (
+    <div style={{ gridColumn: `span ${runDates.length}`, borderBottom: '1px solid var(--line)', borderRight: '1px solid #F0EFEA' }}>
+      <div
+        title={`${booking.job_name} — ${booking.role_name} (${booking.status})${anyUnavailable ? ' · also marked unavailable on part of this run' : ''}`}
+        onClick={() => onOpenJob(booking.job_id)}
+        style={{
+          position: 'relative',
+          height: 26,
+          margin: '2px 1px',
+          borderRadius: 4,
+          cursor: 'pointer',
+          background: style.background,
+          opacity: style.opacity,
+          boxSizing: 'border-box',
+          display: inlineText ? 'flex' : undefined,
+          alignItems: inlineText ? 'center' : undefined,
+          padding: inlineText ? '0 6px' : undefined,
+        }}
+      >
+        {inlineText && (
+          <span
+            style={{
+              fontFamily: 'var(--font)',
+              fontWeight: 600,
+              fontSize: 10,
+              color: '#fff',
+              textShadow: hatchedText ? '0 0 2px rgba(0,0,0,0.85), 0 0 4px rgba(0,0,0,0.6)' : undefined,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              minWidth: 0,
+              flex: '1 1 auto',
+            }}
+          >
+            {inlineText}
+          </span>
+        )}
+        {conflict && (
+          <span style={{ position: 'absolute', top: -4, right: -4, width: 13, height: 13, borderRadius: '50%', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 0 1px var(--line)' }}>
+            <AlertOctagon size={9} color="var(--danger)" />
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -4183,7 +4308,11 @@ function ResourceCalendarContent({
                   </button>
                 )}
               </div>
-              {dates.map((date) => {
+              {buildRowSegments(row, dates).map((seg) => {
+                if ('booking' in seg) {
+                  return <ResourceCalendarBookingRun key={`${seg.booking.id}-${dateISO(seg.dates[0])}`} row={row} runDates={seg.dates} booking={seg.booking} mode={mode} onOpenJob={onOpenJob} />
+                }
+                const date = seg.date
                 const iso = dateISO(date)
                 // Full-height, not header-only — see check 1 write-up: a
                 // header tint only works if the scheduler happens to look
