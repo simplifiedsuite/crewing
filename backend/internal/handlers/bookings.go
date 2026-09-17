@@ -129,7 +129,11 @@ type createBookingRequest struct {
 // No notification fires for a Declined booking either, same reasoning as
 // Pencil: nothing digital happened for the person to be notified about.
 // Rejects with 409 if the parent Job is cancelled/complete, mirroring
-// Equiptra's live project-status guard on booking creation.
+// Equiptra's live project-status guard on booking creation. A request for
+// Offered against a Staff person is silently upgraded to Confirmed (see
+// effectiveStatus below) — a scheduler directly picking someone for a
+// role is already a firm ask, unlike a Freelancer offer awaiting a
+// response.
 func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 	reqID := chi.URLParam(r, "reqId")
 	var req createBookingRequest
@@ -165,6 +169,29 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Testing feedback "Direct-confirm staff bookings, skip the offer
+	// step": a scheduler adding a Staff person directly to a role here is
+	// already a firm, specific ask — unlike the generic AvailabilityRequest
+	// auto-draft path (see autoSuggestBooking in crew_availability.go,
+	// which inserts its own 'offered' row directly and never calls this
+	// handler), so it can skip Offered and land straight on Confirmed.
+	// Freelancers are unaffected. effectiveStatus (not req.Status) is what
+	// actually gets written below and is what the notification branches on.
+	effectiveStatus := req.Status
+	if effectiveStatus == models.BookingStatusOffered {
+		var employmentType models.EmploymentType
+		if err := a.DB.QueryRow(r.Context(),
+			`SELECT employment_type FROM people WHERE id = $1 AND organisation_id = $2`,
+			req.PersonID, currentOrgID,
+		).Scan(&employmentType); err != nil {
+			writeError(w, http.StatusBadRequest, "failed to look up person")
+			return
+		}
+		if employmentType == models.EmploymentTypeStaff {
+			effectiveStatus = models.BookingStatusConfirmed
+		}
+	}
+
 	// A person can only ever be held against a requirement by one active
 	// (Pencilled or Offered) booking at a time. Re-pencilling, offering, or
 	// phone-declining someone who's already Pencilled/Offered for this same
@@ -193,21 +220,27 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 		err = a.DB.QueryRow(r.Context(),
 			`UPDATE bookings SET status = $1, start_date = $2, end_date = $3, call_time = $4, rate_override = $5, notes = $6,
 			        offered_at = CASE WHEN $1 = 'offered' THEN now() ELSE offered_at END,
-			        responded_at = CASE WHEN $1 = 'declined' THEN now() ELSE responded_at END
+			        responded_at = CASE WHEN $1 = 'declined' THEN now() ELSE responded_at END,
+			        confirmed_at = CASE WHEN $1 = 'confirmed' THEN now() ELSE confirmed_at END
 			 WHERE id = $7
 			 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
-			req.Status, req.StartDate, req.EndDate, req.CallTime, req.RateOverride, req.Notes, existingID,
+			effectiveStatus, req.StartDate, req.EndDate, req.CallTime, req.RateOverride, req.Notes, existingID,
 		).Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
 			&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes)
 	} else {
 		// responded_at is only set up-front for a Declined booking, via the CASE
 		// below — recorded as already answered (the phone call itself was the
 		// response), whereas a fresh pencil/offer has no response yet.
+		// confirmed_at is set the same way for a fresh staff booking that
+		// lands straight on Confirmed (effectiveStatus above) — offered_at
+		// still gets its usual now() regardless, since it's NOT NULL and
+		// there's no reason to leave it unset just because Offered was
+		// skipped.
 		err = a.DB.QueryRow(r.Context(),
-			`INSERT INTO bookings (job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, notes, offered_at, responded_at, organisation_id)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), CASE WHEN $3 = 'declined' THEN now() ELSE NULL END, $9)
+			`INSERT INTO bookings (job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, notes, offered_at, responded_at, confirmed_at, organisation_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), CASE WHEN $3 = 'declined' THEN now() ELSE NULL END, CASE WHEN $3 = 'confirmed' THEN now() ELSE NULL END, $9)
 			 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
-			reqID, req.PersonID, req.Status, req.StartDate, req.EndDate, req.CallTime, req.RateOverride, req.Notes, currentOrgID,
+			reqID, req.PersonID, effectiveStatus, req.StartDate, req.EndDate, req.CallTime, req.RateOverride, req.Notes, currentOrgID,
 		).Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
 			&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes)
 	}
@@ -224,11 +257,25 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 		log.Printf("create booking: syncing booking shifts: %v", err)
 	}
 
-	if b.Status == models.BookingStatusOffered {
+	switch b.Status {
+	case models.BookingStatusOffered:
 		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 		if ctxErr == nil {
 			subject, body := notify.RenderBookingOffered(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/offers/"+b.ID))
 			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingOffered,
+				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+		}
+	case models.BookingStatusConfirmed:
+		// The direct-confirm-staff path above — same notification a
+		// scheduler's explicit ConfirmBooking sends, since from the
+		// person's point of view it's the same thing: booked, nothing to
+		// accept or decline. RenderBookingConfirmed says "you're
+		// confirmed", never "offer", so it doesn't misrepresent this as
+		// awaiting a response.
+		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
+		if ctxErr == nil {
+			subject, body := notify.RenderBookingConfirmed(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/bookings/"+b.ID))
+			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingConfirmed,
 				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
 		}
 	}
