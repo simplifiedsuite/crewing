@@ -3914,7 +3914,7 @@ function ResourceCalendarCell({ row, date, mode, onOpenJob }: { row: ResourceCal
   const title = booking
     ? `${booking.job_name} — ${booking.role_name} (${booking.status})${unavailable ? ' · also marked unavailable this day' : ''}`
     : unavailable
-      ? `Unavailable${unavailable.type ? ` — ${unavailable.type.replace('_', ' ')}` : ''}`
+      ? `Unavailable${unavailable.type ? ` — ${AVAILABILITY_TYPE_LABEL[unavailable.type]}` : ''}`
       : tentative
         ? 'Tentative'
         : undefined
@@ -4828,8 +4828,11 @@ function PersonCard({ person, onClick }: { person: Person; onClick: () => void }
 // deliberately an array so Roles/Skills/Documents can be added as further
 // tabs later without restructuring this component.
 
+// Displayed as "Holiday" — the underlying annual_leave enum value is
+// left alone (renaming it would need a migration for no functional
+// benefit), this is wording only.
 const AVAILABILITY_TYPE_LABEL: Record<AvailabilityType, string> = {
-  annual_leave: 'Annual leave',
+  annual_leave: 'Holiday',
   sick: 'Sick',
   toil: 'TOIL',
   other: 'Other',
@@ -4939,7 +4942,7 @@ function AddAvailabilityForm({
             <span style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }}>Reason</span>
             <select value={type} onChange={(e) => setType(e.target.value as AvailabilityType | '')} style={inputStyle}>
               <option value="">Unspecified</option>
-              <option value="annual_leave">Annual leave</option>
+              <option value="annual_leave">Holiday</option>
               <option value="sick">Sick</option>
               <option value="toil">TOIL</option>
               <option value="other">Other</option>
