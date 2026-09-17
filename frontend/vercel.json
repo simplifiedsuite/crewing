@@ -1,4 +1,7 @@
 {
+  "redirects": [
+    { "source": "/(.*)", "has": [{ "type": "host", "value": "crew.simplifiedsuite.io" }], "destination": "https://crewing.simplifiedsuite.io/crew", "permanent": true }
+  ],
   "rewrites": [
     { "source": "/api/:path*", "destination": "https://ralto-api.onrender.com/api/:path*" },
         { "source": "/(.*)", "destination": "/index.html" }
