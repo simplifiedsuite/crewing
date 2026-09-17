@@ -226,6 +226,14 @@ export interface Job {
   created_by?: string
   created_at: string
   updated_at: string
+  // deleted_at/deleted_by — testing feedback "Delete cancelled jobs into
+  // an archive": a second axis alongside status, same shape as
+  // commitment. deleted_by_name is a joined display label (there's no
+  // frontend-reachable way to resolve a staff user id to a name
+  // otherwise, since /users is admin-only).
+  deleted_at?: string
+  deleted_by?: string
+  deleted_by_name?: string
 }
 
 export interface JobContact {

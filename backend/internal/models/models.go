@@ -122,16 +122,26 @@ type Job struct {
 	// OrderNumber is the Monday order number this Job was fetched with —
 	// cached locally at fetch/create time (see migrations/0012), never
 	// live-refreshed. Only set alongside SharedJobID; nil for hand-created Jobs.
-	OrderNumber        *string       `json:"order_number,omitempty"`
-	StartDate          string        `json:"start_date"`
-	EndDate            string        `json:"end_date"`
-	Status             JobStatus     `json:"status"`
-	Commitment         JobCommitment `json:"commitment"`
-	ColorHex           *string       `json:"color_hex,omitempty"`
-	Notes            *string       `json:"notes,omitempty"`
-	CreatedBy        *string       `json:"created_by,omitempty"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	OrderNumber *string       `json:"order_number,omitempty"`
+	StartDate   string        `json:"start_date"`
+	EndDate     string        `json:"end_date"`
+	Status      JobStatus     `json:"status"`
+	Commitment  JobCommitment `json:"commitment"`
+	ColorHex    *string       `json:"color_hex,omitempty"`
+	Notes       *string       `json:"notes,omitempty"`
+	CreatedBy   *string       `json:"created_by,omitempty"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+	// DeletedAt/DeletedBy — testing feedback "Delete cancelled jobs into an
+	// archive": a second axis alongside Status, same shape as Commitment
+	// (see migrations/0004_pencil.sql). Only ever set via SoftDeleteJob,
+	// only for a Cancelled job. DeletedByName is a joined display label
+	// (see jobSelectColumns) — there's no frontend-reachable way to
+	// resolve a staff user id to a name otherwise, since /users is
+	// admin-only.
+	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy     *string    `json:"deleted_by,omitempty"`
+	DeletedByName *string    `json:"deleted_by_name,omitempty"`
 }
 
 type JobContact struct {

@@ -11,11 +11,13 @@ import (
 )
 
 const jobSelectColumns = `id, name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, order_number,
-	        start_date, end_date, status, commitment, color_hex, notes, created_by, created_at, updated_at`
+	        start_date, end_date, status, commitment, color_hex, notes, created_by, created_at, updated_at,
+	        deleted_at, deleted_by, (SELECT u.name FROM users u WHERE u.id = deleted_by) AS deleted_by_name`
 
 func scanJob(row pgx.Row, j *models.Job) error {
 	return row.Scan(&j.ID, &j.Name, &j.ClientID, &j.ProjectReference, &j.VenueID, &j.ProjectID, &j.SharedContractID, &j.SharedContractName, &j.SharedJobID, &j.OrderNumber,
-		&j.StartDate, &j.EndDate, &j.Status, &j.Commitment, &j.ColorHex, &j.Notes, &j.CreatedBy, &j.CreatedAt, &j.UpdatedAt)
+		&j.StartDate, &j.EndDate, &j.Status, &j.Commitment, &j.ColorHex, &j.Notes, &j.CreatedBy, &j.CreatedAt, &j.UpdatedAt,
+		&j.DeletedAt, &j.DeletedBy, &j.DeletedByName)
 }
 
 func (a *API) ListJobs(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +239,62 @@ func (a *API) DeleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// SoftDeleteJob is the testing-feedback "Delete cancelled jobs into an
+// archive" action — deliberately not the hard DeleteJob above. Only a
+// Cancelled job can be soft-deleted (the WHERE clause enforces it, not
+// just the frontend button's own gating): this isn't general-purpose job
+// deletion, just a way to clear out jobs already cancelled and cluttering
+// the UI. Sets deleted_at/deleted_by; status is untouched (stays
+// Cancelled) and no row is removed, so Restore below is a cheap, safe
+// undo.
+func (a *API) SoftDeleteJob(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	staff, ok := staffClaimsFromContext(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	var j models.Job
+	err := scanJob(a.DB.QueryRow(r.Context(),
+		`UPDATE jobs SET deleted_at = now(), deleted_by = $1, updated_at = now()
+		 WHERE id = $2 AND organisation_id = $3 AND status = 'cancelled' AND deleted_at IS NULL
+		 RETURNING `+jobSelectColumns,
+		staff, id, currentOrgID,
+	), &j)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusBadRequest, "only a cancelled job that hasn't already been deleted can be deleted")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete job")
+		return
+	}
+	writeJSON(w, http.StatusOK, j)
+}
+
+// RestoreJob clears deleted_at/deleted_by — the safety net for a mis-click
+// on SoftDeleteJob above. Status is untouched, so a restored job goes
+// straight back to being a normal Cancelled job in every view.
+func (a *API) RestoreJob(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var j models.Job
+	err := scanJob(a.DB.QueryRow(r.Context(),
+		`UPDATE jobs SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
+		 WHERE id = $1 AND organisation_id = $2 AND deleted_at IS NOT NULL
+		 RETURNING `+jobSelectColumns,
+		id, currentOrgID,
+	), &j)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "deleted job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore job")
+		return
+	}
+	writeJSON(w, http.StatusOK, j)
 }
 
 // --- Job contacts ---

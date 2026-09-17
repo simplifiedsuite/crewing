@@ -199,6 +199,19 @@ export function updateJobStatus(id: string, status: JobStatus) {
   return api.post<Job>(`/jobs/${id}/status`, { status })
 }
 
+// deleteJob/restoreJob — testing feedback "Delete cancelled jobs into an
+// archive". Soft delete only: the backend rejects deleteJob unless the
+// job is already Cancelled (see SoftDeleteJob), so this deliberately
+// doesn't take a confirmation param — the calling UI owns that step, same
+// as updateJobStatus's cancel/complete actions.
+export function deleteJob(id: string) {
+  return api.post<Job>(`/jobs/${id}/delete`)
+}
+
+export function restoreJob(id: string) {
+  return api.post<Job>(`/jobs/${id}/restore`)
+}
+
 // A completed Job worked by a specific person — the Archive view's crew
 // filter and PersonDetail's "Completed jobs" tab both read this, mirroring
 // ScheduleItHistory's own shape (see backend's completedJobSummary).

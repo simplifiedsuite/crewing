@@ -58,6 +58,8 @@ import {
   createJob,
   updateJob,
   updateJobStatus,
+  deleteJob,
+  restoreJob,
   useCompletedJobsForPerson,
   createJobRequirement,
   updateJobRequirement,
@@ -819,17 +821,23 @@ function CalendarContent({
   const openEvents = useMemo(() => prospectiveEvents.filter((e) => e.status === 'open'), [prospectiveEvents])
   const selectedEvent = openEvents.find((e) => e.id === selectedEventId)
 
+  // Deleted jobs (testing feedback "Delete cancelled jobs into an
+  // archive") drop off the Calendar same as every other normal view —
+  // filtered here since Calendar otherwise shows every status, unlike
+  // Jobs/Planner which already exclude Complete.
   const calendarJobs: CalendarJob[] = useMemo(
     () =>
-      summaries.map((s, i) => ({
-        id: s.job.id,
-        name: s.job.name,
-        clientColor: clientColor(clients[s.job.client_id], i),
-        start: s.job.start_date,
-        end: s.job.end_date,
-        confirmed: s.confirmed,
-        required: s.required,
-      })),
+      summaries
+        .filter((s) => !s.job.deleted_at)
+        .map((s, i) => ({
+          id: s.job.id,
+          name: s.job.name,
+          clientColor: clientColor(clients[s.job.client_id], i),
+          start: s.job.start_date,
+          end: s.job.end_date,
+          confirmed: s.confirmed,
+          required: s.required,
+        })),
     [summaries, clients],
   )
 
@@ -2948,7 +2956,7 @@ function JobsContent({
   // Testing feedback item E — the two new terminal-status actions. One
   // shared piece of state (not two booleans) so confirming one can't
   // somehow overlap with confirming the other.
-  const [statusAction, setStatusAction] = useState<'idle' | 'confirming-cancel' | 'confirming-complete' | 'busy'>('idle')
+  const [statusAction, setStatusAction] = useState<'idle' | 'confirming-cancel' | 'confirming-complete' | 'confirming-delete' | 'busy'>('idle')
 
   useEffect(() => {
     if (prefill) setCreating(true)
@@ -2958,8 +2966,10 @@ function JobsContent({
   // drop out of the active Jobs list — filtered here (not in
   // useJobSummaries itself) since Planner needs the same exclusion and
   // Archive needs the opposite, and all three already share this one
-  // summaries fetch.
-  const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete'), [summaries])
+  // summaries fetch. Deleted jobs (testing feedback "Delete cancelled
+  // jobs into an archive") are excluded the same way — Archive is
+  // likewise the one place that wants them.
+  const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete' && !s.job.deleted_at), [summaries])
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase()
@@ -3041,6 +3051,20 @@ function JobsContent({
     setStatusAction('busy')
     try {
       await updateJobStatus(jobId, status)
+      reloadSummaries()
+    } finally {
+      setStatusAction('idle')
+    }
+  }
+
+  // handleDeleteJob — testing feedback "Delete cancelled jobs into an
+  // archive". Soft delete: the job drops out of activeSummaries above
+  // (same effect as Mark complete) and reappears in Archive tagged
+  // Deleted, not removed from the database.
+  async function handleDeleteJob(jobId: string) {
+    setStatusAction('busy')
+    try {
+      await deleteJob(jobId)
       reloadSummaries()
     } finally {
       setStatusAction('idle')
@@ -3166,6 +3190,19 @@ function JobsContent({
                   <CheckCircle2 size={11} /> Mark complete
                 </button>
               )}
+              {/* Delete only ever appears once a job is already Cancelled —
+                  this clears out jobs cluttering the UI, it's not
+                  general-purpose job deletion. Soft delete (see
+                  SoftDeleteJob): the job moves to Archive, tagged Deleted,
+                  restorable from there. */}
+              {statusAction === 'idle' && selected.job.status === 'cancelled' && (
+                <button
+                  onClick={() => setStatusAction('confirming-delete')}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--danger)', background: '#fff', color: 'var(--danger)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+                >
+                  <Trash2 size={11} /> Delete
+                </button>
+              )}
             </div>
 
             {confirmEveryoneState === 'confirming' && (
@@ -3216,6 +3253,23 @@ function JobsContent({
                     style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
                   >
                     Yes, mark complete
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {statusAction === 'confirming-delete' && (
+              <div style={{ border: '1px solid var(--danger)', background: 'var(--danger-bg)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>Delete this job? It'll disappear from Jobs, Planner, Calendar and Today, and move to Archive tagged Deleted — restorable from there if needed.</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => setStatusAction('idle')} style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--ink-muted)' }}>
+                    Never mind
+                  </button>
+                  <button
+                    onClick={() => handleDeleteJob(selected.job.id)}
+                    style={{ border: 'none', background: 'var(--danger)', color: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
+                  >
+                    Yes, delete job
                   </button>
                 </div>
               </div>
@@ -3572,7 +3626,9 @@ function PlannerContent({
   // longer schedulable here — same exclusion as JobsContent's own
   // activeSummaries, applied independently since Planner gets its own
   // summaries prop rather than sharing JobsContent's derived value.
-  const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete'), [summaries])
+  // Deleted jobs (testing feedback "Delete cancelled jobs into an
+  // archive") are excluded the same way.
+  const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete' && !s.job.deleted_at), [summaries])
   const summary = activeSummaries.find((s) => s.job.id === selectedJobId) ?? activeSummaries[0]
   const [activeReq, setActiveReq] = useState<JobRequirementWithCounts | undefined>(undefined)
 
@@ -4175,33 +4231,92 @@ function ResourceCalendarContent({
 // completed job's bookings just to filter client-side.
 // ---------------------------------------------------------------------------
 
-function ArchiveRow({ name, clientName, startDate, endDate }: { name: string; clientName: string; startDate: string; endDate: string }) {
+// deletedAtLabel — deleted_at is a real timestamp (unlike the pure
+// YYYY-MM-DD date strings formatDate handles), so it's correct to go
+// through Date here rather than the string-split trick used elsewhere.
+function deletedAtLabel(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function ArchiveRow({
+  name,
+  clientName,
+  startDate,
+  endDate,
+  badge,
+  meta,
+  action,
+}: {
+  name: string
+  clientName: string
+  startDate: string
+  endDate: string
+  badge?: React.ReactNode
+  meta?: string
+  action?: React.ReactNode
+}) {
   return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 10, background: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <div>
-        <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{name}</div>
+    <div style={{ border: '1px solid var(--line)', borderRadius: 10, background: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{name}</div>
+          {badge}
+        </div>
         <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>{clientName}</div>
+        {meta && <div style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)', marginTop: 2 }}>{meta}</div>}
       </div>
-      <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>
-        {formatDate(startDate)} – {formatDate(endDate)}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+        <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)', whiteSpace: 'nowrap' }}>
+          {formatDate(startDate)} – {formatDate(endDate)}
+        </div>
+        {action}
       </div>
     </div>
   )
 }
 
-function ArchiveContent({ summaries, clients, people }: { summaries: JobSummary[]; clients: Record<string, Client>; people: Person[] }) {
+function DeletedBadge() {
+  return (
+    <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 10.5, padding: '2px 8px', borderRadius: 999, color: 'var(--danger)', background: 'var(--danger-bg)', whiteSpace: 'nowrap' }}>
+      Deleted
+    </span>
+  )
+}
+
+function ArchiveContent({ summaries, clients, people, reloadSummaries }: { summaries: JobSummary[]; clients: Record<string, Client>; people: Person[]; reloadSummaries: () => void }) {
   const [personFilter, setPersonFilter] = useState('')
-  const completed = useMemo(() => summaries.filter((s) => s.job.status === 'complete'), [summaries])
+  const [restoringId, setRestoringId] = useState<string | undefined>(undefined)
+  const completed = useMemo(() => summaries.filter((s) => s.job.status === 'complete' && !s.job.deleted_at), [summaries])
+  // Deleted — testing feedback "Delete cancelled jobs into an archive".
+  // Listed above Completed (most likely to need a quick Restore) and kept
+  // visibly distinct via DeletedBadge/meta rather than blending into the
+  // completed list.
+  const deleted = useMemo(() => summaries.filter((s) => s.job.deleted_at), [summaries])
   const { data: personCompleted, loading: personLoading } = useCompletedJobsForPerson(personFilter || undefined)
 
   const sortedPeople = useMemo(() => [...people].sort((a, b) => `${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`)), [people])
+
+  // Cheap safety net for a mis-click on Delete (see SoftDeleteJob/
+  // RestoreJob) — clears deleted_at/deleted_by, the job reappears in
+  // Jobs/Planner/Calendar/Today and drops out of this list.
+  async function handleRestore(jobId: string) {
+    setRestoringId(jobId)
+    try {
+      await restoreJob(jobId)
+      reloadSummaries()
+    } finally {
+      setRestoringId(undefined)
+    }
+  }
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
         <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)' }}>Archive</div>
       </div>
-      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Completed jobs — moved out of the active Jobs list once marked Complete.</div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>
+        Completed jobs, moved out of the active Jobs list once marked Complete, and deleted jobs, cleared out once Cancelled.
+      </div>
 
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)', maxWidth: 280, marginBottom: 20 }}>
         Filter to one crew member's history
@@ -4220,9 +4335,35 @@ function ArchiveContent({ summaries, clients, people }: { summaries: JobSummary[
       </label>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 640 }}>
+        {/* Deleted jobs aren't scoped by the crew-member filter above — it
+            reads per-person Completed history via a dedicated endpoint
+            (useCompletedJobsForPerson) that has no deleted-jobs equivalent,
+            so this list always shows regardless of that filter. */}
+        {!personFilter &&
+          deleted.map((s) => (
+            <ArchiveRow
+              key={s.job.id}
+              name={s.job.name}
+              clientName={clients[s.job.client_id]?.name ?? 'Unknown client'}
+              startDate={s.job.start_date}
+              endDate={s.job.end_date}
+              badge={<DeletedBadge />}
+              meta={`Deleted by ${s.job.deleted_by_name ?? 'Unknown'}${s.job.deleted_at ? ' · ' + deletedAtLabel(s.job.deleted_at) : ''}`}
+              action={
+                <button
+                  onClick={() => handleRestore(s.job.id)}
+                  disabled={restoringId === s.job.id}
+                  style={{ border: '1px solid var(--line)', background: '#fff', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, color: 'var(--ink)', cursor: restoringId === s.job.id ? 'default' : 'pointer', opacity: restoringId === s.job.id ? 0.6 : 1 }}
+                >
+                  {restoringId === s.job.id ? 'Restoring…' : 'Restore'}
+                </button>
+              }
+            />
+          ))}
+
         {!personFilter &&
           completed.map((s) => <ArchiveRow key={s.job.id} name={s.job.name} clientName={clients[s.job.client_id]?.name ?? 'Unknown client'} startDate={s.job.start_date} endDate={s.job.end_date} />)}
-        {!personFilter && completed.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No completed jobs yet.</div>}
+        {!personFilter && completed.length === 0 && deleted.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No archived jobs yet.</div>}
 
         {personFilter && personLoading && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>Loading…</div>}
         {personFilter && !personLoading && personCompleted.map((j) => <ArchiveRow key={j.id} name={j.name} clientName={j.client_name} startDate={j.start_date} endDate={j.end_date} />)}
@@ -6048,7 +6189,7 @@ export function RaltoDesktopApp() {
         />
       )}
       {active === 'crew' && <CrewContent people={people} roles={rolesList} reloadPeople={reloadPeople} />}
-      {active === 'archive' && <ArchiveContent summaries={summaries} clients={clients} people={people} />}
+      {active === 'archive' && <ArchiveContent summaries={summaries} clients={clients} people={people} reloadSummaries={reloadSummaries} />}
       {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} vehicles={vehiclesList} reloadVehicles={reloadVehicles} />}
     </div>
   )

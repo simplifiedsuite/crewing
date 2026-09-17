@@ -86,6 +86,8 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Put("/{id}", api.UpdateJob)
 			r.Delete("/{id}", api.DeleteJob)
 			r.Post("/{id}/status", api.UpdateJobStatus)
+			r.Post("/{id}/delete", api.SoftDeleteJob)
+			r.Post("/{id}/restore", api.RestoreJob)
 			r.Get("/{id}/contacts", api.ListJobContacts)
 			r.Post("/{id}/contacts", api.CreateJobContact)
 			r.Get("/{id}/requirements", api.ListJobRequirementsWithCounts)
