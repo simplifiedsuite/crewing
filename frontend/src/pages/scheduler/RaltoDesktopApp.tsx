@@ -1242,6 +1242,21 @@ function BookingDateRangeEditor({ booking, onUpdated }: { booking: Booking; onUp
       setError('End date must be on or after the start date.')
       return
     }
+    // A no-op save (dates unchanged) used to still hit UpdateBooking, which
+    // — since the range "changed" as far as the backend can tell, it has
+    // no way to know this request changed nothing — regenerates
+    // booking_shifts to the full new range every time, silently wiping out
+    // any day-level narrowing (item L) the range itself hadn't touched.
+    // Found live on a real booking: opening this editor and saving without
+    // changing anything reset a correctly-narrowed 1-day shift selection
+    // back to "every day". Skipping the call entirely when nothing
+    // actually changed avoids that; a real range change still resyncs
+    // shifts to the new range, which is the correct, already-verified
+    // behaviour for an actual extend/shorten.
+    if (startDate === booking.start_date && endDate === booking.end_date) {
+      setEditing(false)
+      return
+    }
     setSaving(true)
     setError(undefined)
     try {
