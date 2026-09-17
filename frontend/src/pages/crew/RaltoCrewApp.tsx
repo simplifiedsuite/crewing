@@ -720,7 +720,7 @@ export function RaltoCrewApp() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#fff', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-body)' }}>
+    <div className="dvh-shell" style={{ background: '#fff', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-body)' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         :root {

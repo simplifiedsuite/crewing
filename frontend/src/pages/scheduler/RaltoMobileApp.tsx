@@ -970,21 +970,9 @@ export function RaltoMobileApp() {
   }
 
   return (
-    <div className="ralto-mobile-shell" style={{ background: '#fff', fontFamily: 'var(--font-body)', display: 'flex', flexDirection: 'column' }}>
+    <div className="dvh-shell" style={{ background: '#fff', fontFamily: 'var(--font-body)', display: 'flex', flexDirection: 'column' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        /* iOS Safari's toolbar shows/hides as you scroll, changing the
-           actual visible viewport height without 100vh ever updating to
-           match — a min-height: 100vh shell can end up taller than what's
-           actually on screen, pushing the bottom tab bar below the fold
-           (looks like it "disappears", though it's just off-screen).
-           100dvh tracks the real, currently-visible height instead; the
-           100vh line stays first as a fallback for browsers that don't
-           understand dvh, which then simply ignore the second line. */
-        .ralto-mobile-shell {
-          min-height: 100vh;
-          min-height: 100dvh;
-        }
         :root {
           --font-display: 'Inter', sans-serif;
           --font-body: 'Inter', sans-serif;

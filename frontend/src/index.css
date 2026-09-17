@@ -5,3 +5,18 @@
 body {
   margin: 0;
 }
+
+/* Shared by every mobile-width app shell (RaltoMobileApp, RaltoCrewApp) —
+   iOS Safari's own toolbar shows/hides as you scroll, changing the actual
+   visible viewport height without 100vh ever updating to match. A
+   min-height: 100vh shell can end up taller than what's actually on
+   screen, pushing a bottom-pinned nav bar below the fold (it "disappears"
+   even though the page content hasn't changed). 100dvh tracks the real,
+   currently-visible height instead; the 100vh line stays first as a
+   fallback for browsers that don't understand dvh, which then simply
+   ignore the second line. One shared class here rather than duplicating
+   the rule in each app's own inline <style> block. */
+.dvh-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
