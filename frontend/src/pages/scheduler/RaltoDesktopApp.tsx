@@ -120,6 +120,7 @@ import type {
   AvailabilityType,
   Booking,
   BookingStatus,
+  Candidate,
   Client,
   CoreClient,
   CoreContract,
@@ -3396,6 +3397,148 @@ function AlreadyAskedRow({ entry, declined }: { entry: AlreadyAskedEntry; declin
   )
 }
 
+// CandidateRow — the "add a person to a role" action. Day-selection at
+// creation time: for a multi-day requirement, Pencil/Offer opens a day
+// picker (every date in the requirement's range, all selected by default)
+// instead of booking immediately — one extra click to accept the default
+// (full range, identical to the old one-click behaviour), or deselect days
+// to narrow it right away. This is what should have been populating
+// booking_shifts correctly from the start, rather than leaving a person's
+// real day coverage to drift out of sync with their Booking's own
+// start_date/end_date the way it did for real bookings found in
+// production. A single-day requirement has nothing to narrow, so it skips
+// the picker entirely and books on the one click it always did.
+function CandidateRow({
+  candidate: c,
+  activeReq,
+  variant,
+  onBook,
+  onDecline,
+}: {
+  candidate: Candidate
+  activeReq: JobRequirementWithCounts
+  variant: 'suitable' | 'possible'
+  onBook: (personId: string, status: 'offered' | 'pencilled', days: string[]) => Promise<void>
+  onDecline: (personId: string, name: string) => void
+}) {
+  const fullDays = useMemo(() => expandDateRangeClient(activeReq.start_date, activeReq.end_date), [activeReq.start_date, activeReq.end_date])
+  const multiDay = fullDays.length > 1
+  const [picking, setPicking] = useState<'pencilled' | 'offered' | null>(null)
+  const [selectedDays, setSelectedDays] = useState<Set<string>>(new Set(fullDays))
+  const [saving, setSaving] = useState(false)
+
+  async function book(status: 'pencilled' | 'offered', days: string[]) {
+    setSaving(true)
+    try {
+      await onBook(c.person_id, status, days)
+      setPicking(null)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function handleClick(status: 'pencilled' | 'offered') {
+    if (!multiDay) {
+      book(status, fullDays)
+      return
+    }
+    setSelectedDays(new Set(fullDays))
+    setPicking(status)
+  }
+
+  const pencilStyle = { display: 'flex', alignItems: 'center', gap: 4, background: '#fff', color: 'var(--primary-soft)', border: '1px dashed var(--primary-soft)', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }
+  const offerStyle =
+    variant === 'suitable'
+      ? { display: 'flex', alignItems: 'center', gap: 4, background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }
+      : { display: 'flex', alignItems: 'center', gap: 4, background: 'none', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }
+  const declineStyle = { display: 'flex', alignItems: 'center', gap: 4, background: 'none', color: 'var(--ink-muted)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 10px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }
+
+  return (
+    <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0' }}>
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{c.name}</span>
+          {c.preferred_status === 'preferred' && <Star size={11} color="var(--primary)" fill="var(--primary)" />}
+        </div>
+        <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>
+          {c.base_location ?? 'Location unknown'}
+          {c.standard_rate ? ` · ${c.rate_currency ?? ''}${c.standard_rate}/day` : ''}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+        <button onClick={() => handleClick('pencilled')} title="Hold this person without formally asking yet" style={pencilStyle}>
+          Pencil
+        </button>
+        <button onClick={() => handleClick('offered')} style={offerStyle}>
+          <Check size={12} /> Offer
+        </button>
+        <button onClick={() => onDecline(c.person_id, c.name)} title="Record a decline from this call — no email sent" style={declineStyle}>
+          <X size={12} />
+        </button>
+      </div>
+
+      {picking && (
+        <div
+          style={{
+            position: 'absolute',
+            zIndex: 5,
+            right: 0,
+            top: '100%',
+            marginTop: 4,
+            border: '1px solid var(--line)',
+            background: '#fff',
+            borderRadius: 8,
+            padding: 10,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.14)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            minWidth: 190,
+          }}
+        >
+          <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, color: 'var(--ink)' }}>Which days is {c.name.split(' ')[0]} covering?</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+            {fullDays.map((day) => (
+              <label key={day} style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={selectedDays.has(day)}
+                  onChange={(e) =>
+                    setSelectedDays((prev) => {
+                      const next = new Set(prev)
+                      if (e.target.checked) next.add(day)
+                      else next.delete(day)
+                      return next
+                    })
+                  }
+                />
+                {formatDate(day)}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+            <button
+              type="button"
+              onClick={() => setPicking(null)}
+              style={{ flex: 1, border: '1px solid var(--line)', background: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', color: 'var(--ink-muted)' }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => book(picking, Array.from(selectedDays).sort())}
+              disabled={saving || selectedDays.size === 0}
+              style={{ flex: 1, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', opacity: saving || selectedDays.size === 0 ? 0.6 : 1 }}
+            >
+              {saving ? 'Saving…' : picking === 'pencilled' ? 'Pencil' : 'Offer'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CandidateGroup({ title, tone, children }: { title: string; tone: string; children: React.ReactNode }) {
   return (
     <div style={{ marginTop: 18 }}>
@@ -3473,9 +3616,15 @@ function PlannerContent({
   // inline prompt, not a second required step.
   const [declinedFollowUp, setDeclinedFollowUp] = useState<{ personId: string; name: string; startDate: string; endDate: string } | undefined>(undefined)
 
-  async function handleOffer(personId: string, status: 'offered' | 'pencilled' = 'offered') {
-    if (!activeReq) return
-    await offerBooking(activeReq.id, personId, activeReq.start_date, activeReq.end_date, activeReq.call_time, status)
+  // days — testing feedback: day-selection at booking creation. Sorted
+  // ascending by CandidateRow before calling this, so days[0]/[days.length-1]
+  // are the min/max — Booking.start_date/end_date become exactly that
+  // range (matching how partial-job bookings already work), and `days`
+  // itself drives which BookingShift rows get created, all in the one
+  // existing CreateBooking call — no parallel path.
+  async function handleOffer(personId: string, status: 'offered' | 'pencilled', days: string[]) {
+    if (!activeReq || days.length === 0) return
+    await offerBooking(activeReq.id, personId, days[0], days[days.length - 1], activeReq.call_time, status, days)
     await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
   }
 
@@ -3562,76 +3711,18 @@ function PlannerContent({
             )}
             <CandidateGroup title="AVAILABLE & SUITABLE" tone="var(--success)">
               {pool.suitable.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No one in this group right now.</div>}
-              {pool.suitable.map((c) => (
-                <div key={c.person_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0' }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{c.name}</span>
-                      {c.preferred_status === 'preferred' && <Star size={11} color="var(--primary)" fill="var(--primary)" />}
-                    </div>
-                    <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>
-                      {c.base_location ?? 'Location unknown'}
-                      {c.standard_rate ? ` · ${c.rate_currency ?? ''}${c.standard_rate}/day` : ''}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    <button
-                      onClick={() => handleOffer(c.person_id, 'pencilled')}
-                      title="Hold this person without formally asking yet"
-                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#fff', color: 'var(--primary-soft)', border: '1px dashed var(--primary-soft)', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-                    >
-                      Pencil
-                    </button>
-                    <button
-                      onClick={() => handleOffer(c.person_id)}
-                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-                    >
-                      <Check size={12} /> Offer
-                    </button>
-                    <button
-                      onClick={() => handleNotAvailable(c.person_id, c.name)}
-                      title="Record a decline from this call — no email sent"
-                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', color: 'var(--ink-muted)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 10px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                </div>
-              ))}
+              {activeReq &&
+                pool.suitable.map((c) => (
+                  <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="suitable" onBook={handleOffer} onDecline={handleNotAvailable} />
+                ))}
             </CandidateGroup>
 
             <CandidateGroup title="POSSIBLE" tone="var(--attention)">
               {pool.possible.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No one in this group right now.</div>}
-              {pool.possible.map((c) => (
-                <div key={c.person_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0' }}>
-                  <div>
-                    <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{c.name}</div>
-                    <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>{c.base_location ?? 'Location unknown'}</div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    <button
-                      onClick={() => handleOffer(c.person_id, 'pencilled')}
-                      title="Hold this person without formally asking yet"
-                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#fff', color: 'var(--primary-soft)', border: '1px dashed var(--primary-soft)', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-                    >
-                      Pencil
-                    </button>
-                    <button
-                      onClick={() => handleOffer(c.person_id)}
-                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-                    >
-                      <Check size={12} /> Offer
-                    </button>
-                    <button
-                      onClick={() => handleNotAvailable(c.person_id, c.name)}
-                      title="Record a decline from this call — no email sent"
-                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', color: 'var(--ink-muted)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 10px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                </div>
-              ))}
+              {activeReq &&
+                pool.possible.map((c) => (
+                  <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="possible" onBook={handleOffer} onDecline={handleNotAvailable} />
+                ))}
             </CandidateGroup>
 
             <CandidateGroup title="UNAVAILABLE" tone="var(--ink-muted)">

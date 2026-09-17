@@ -637,6 +637,12 @@ export function invitePerson(personId: string) {
 // the phone-call "Not available" action in Planner (a no recorded straight
 // from the call, no digital offer ever sent), alongside the original
 // 'offered'/'pencilled' starting states.
+// days — the specific dates (within [startDate, endDate]) this booking
+// actually covers, per person, at creation time. Omitted defaults to every
+// day in the range server-side (see resolveShiftDays), which is exactly
+// today's existing behaviour — callers that don't pass it get no change.
+// When passed, startDate/endDate should already be the min/max of days
+// (CreateBooking stores them as given; only `days` drives booking_shifts).
 export function offerBooking(
   requirementId: string,
   personId: string,
@@ -644,6 +650,7 @@ export function offerBooking(
   endDate: string,
   callTime?: string,
   status: 'offered' | 'pencilled' | 'declined' = 'offered',
+  days?: string[],
 ) {
   return api.post<Booking>(`/job-requirements/${requirementId}/bookings`, {
     person_id: personId,
@@ -651,6 +658,7 @@ export function offerBooking(
     end_date: endDate,
     call_time: callTime,
     status,
+    days,
   })
 }
 
