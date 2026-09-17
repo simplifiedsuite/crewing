@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard,
   Calendar,
@@ -3115,6 +3115,37 @@ function JobVehiclesSection({ jobId, vehiclesList }: { jobId: string; vehiclesLi
   )
 }
 
+// Testing feedback P — confirming/cancelling/removing a booking (or
+// offering/confirming/cancelling a Planner candidate) changes row heights
+// and regroups content, and the summary/bookings refetch it triggers can
+// land across more than one React commit. A single "restore once" effect
+// only survives the first of those commits — a later one (e.g. a booking
+// row losing its confirmed person entirely) can drift the scroll position
+// again after that, which is what testing caught. Reapplying the captured
+// position for a few animation frames after the action settles covers
+// however many commits actually happen, without needing to know that
+// number in advance. Also reclaims focus onto the panel when the clicked
+// button's removal from the DOM dropped it to <body> (standard browser
+// behaviour), so Tab order stays local instead of restarting at the page's
+// first focusable element.
+async function withPreservedScrollAndFocus<T>(panel: HTMLDivElement | null, action: () => Promise<T>): Promise<T> {
+  const scrollTop = panel?.scrollTop
+  try {
+    return await action()
+  } finally {
+    if (panel != null && scrollTop != null) {
+      let frames = 0
+      const tick = () => {
+        panel.scrollTop = scrollTop
+        if (document.activeElement === document.body) panel.focus()
+        frames += 1
+        if (frames < 10) requestAnimationFrame(tick)
+      }
+      requestAnimationFrame(tick)
+    }
+  }
+}
+
 function JobsContent({
   summaries,
   clients,
@@ -3163,19 +3194,8 @@ function JobsContent({
   // somehow overlap with confirming the other.
   const [statusAction, setStatusAction] = useState<'idle' | 'confirming-cancel' | 'confirming-complete' | 'confirming-delete' | 'busy'>('idle')
 
-  // Testing feedback P — confirming/cancelling/removing a booking changes
-  // that row's height (its action buttons differ by status), and the
-  // summary + bookings refetch it triggers can land in two separate
-  // renders. Left alone, the browser's own scroll-anchoring doesn't
-  // reliably survive that gap, so the panel visibly jumps out from under
-  // whatever the person was looking at. Fixed by capturing scrollTop right
-  // before the mutating call and reapplying it once the relevant state has
-  // actually settled, rather than trusting the browser to leave it alone.
+  // Testing feedback P — see withPreservedScrollAndFocus above.
   const panelRef = useRef<HTMLDivElement>(null)
-  const scrollRestoreRef = useRef<number | null>(null)
-  const captureScroll = useCallback(() => {
-    scrollRestoreRef.current = panelRef.current?.scrollTop ?? null
-  }, [])
 
   useEffect(() => {
     if (prefill) setCreating(true)
@@ -3200,23 +3220,6 @@ function JobsContent({
   // from the list (unchanged existing behaviour); only completing a job
   // actually clears it out from under them.
   const selected = activeSummaries.find((s) => s.job.id === selectedId) ?? activeSummaries[0]
-
-  // Reapplies once whichever piece of state actually shifted the layout
-  // (summary counts/requirements land first, bookings can land a render
-  // later) has settled — see captureScroll above for why this is needed.
-  useLayoutEffect(() => {
-    if (scrollRestoreRef.current != null && panelRef.current) {
-      panelRef.current.scrollTop = scrollRestoreRef.current
-      scrollRestoreRef.current = null
-      // The button that was just clicked (Confirm/Cancel/Remove) often gets
-      // removed from the DOM once its row's status changes, which per
-      // standard browser behaviour drops focus to <body> — from there, the
-      // next Tab press restarts at the very top of the page instead of
-      // continuing near where the person was working. Reclaiming focus onto
-      // the panel keeps Tab order local instead.
-      if (document.activeElement === document.body) panelRef.current.focus()
-    }
-  }, [bookingsByReq, selected])
   // Testing feedback R — fetched once for the selected Job, threaded down
   // to every JobRoleRow/BookedPersonRow/BookingDaysBadge below rather than
   // each fetching its own copy.
@@ -3255,23 +3258,26 @@ function JobsContent({
   }, [selected?.job.id, selected?.requirements, reloadBookings])
 
   async function handleConfirmBooking(bookingId: string) {
-    captureScroll()
-    await confirmBooking(bookingId)
-    await Promise.all([reloadSummaries(), reloadBookings(selected.requirements)])
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await confirmBooking(bookingId)
+      await Promise.all([reloadSummaries(), reloadBookings(selected.requirements)])
+    })
   }
 
   async function handleCancelBooking(bookingId: string) {
-    captureScroll()
-    await cancelBooking(bookingId)
-    await Promise.all([reloadSummaries(), reloadBookings(selected.requirements)])
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await cancelBooking(bookingId)
+      await Promise.all([reloadSummaries(), reloadBookings(selected.requirements)])
+    })
   }
 
   // Testing feedback item F — see JobRoleRow's own confirm step for the
   // cascade-delete warning; this just performs the delete once confirmed.
   async function handleDeleteRequirement(req: JobRequirementWithCounts) {
-    captureScroll()
-    await deleteJobRequirement(req.id)
-    await reloadSummaries()
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await deleteJobRequirement(req.id)
+      await reloadSummaries()
+    })
   }
 
   // Testing feedback X — remove exactly one unfilled slot from a
@@ -3284,20 +3290,21 @@ function JobsContent({
   // (reusing the same delete path) since a 0-slot role requirement is
   // meaningless to keep around.
   async function handleRemoveSlot(req: JobRequirementWithCounts) {
-    captureScroll()
-    if (req.quantity_required <= 1) {
-      await deleteJobRequirement(req.id)
-    } else {
-      await updateJobRequirement(req.id, {
-        role_id: req.role_id,
-        quantity_required: req.quantity_required - 1,
-        start_date: req.start_date,
-        end_date: req.end_date,
-        call_time: req.call_time,
-        notes: req.notes,
-      })
-    }
-    await reloadSummaries()
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      if (req.quantity_required <= 1) {
+        await deleteJobRequirement(req.id)
+      } else {
+        await updateJobRequirement(req.id, {
+          role_id: req.role_id,
+          quantity_required: req.quantity_required - 1,
+          start_date: req.start_date,
+          end_date: req.end_date,
+          call_time: req.call_time,
+          notes: req.notes,
+        })
+      }
+      await reloadSummaries()
+    })
   }
 
   const pendingBookings = useMemo(
@@ -3306,11 +3313,12 @@ function JobsContent({
   )
 
   async function confirmEveryoneNow() {
-    captureScroll()
-    setConfirmEveryoneState('busy')
-    await Promise.all(pendingBookings.map((b) => confirmBooking(b.id)))
-    await Promise.all([reloadSummaries(), reloadBookings(selected.requirements)])
-    setConfirmEveryoneState('idle')
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      setConfirmEveryoneState('busy')
+      await Promise.all(pendingBookings.map((b) => confirmBooking(b.id)))
+      await Promise.all([reloadSummaries(), reloadBookings(selected.requirements)])
+      setConfirmEveryoneState('idle')
+    })
   }
 
   // Testing feedback item E — Cancel/Complete both go through the same
@@ -3595,10 +3603,7 @@ function JobsContent({
               onOpenInPlanner={(req) => onOpenRoleInPlanner(req.job_id, req.id)}
               onConfirmBooking={handleConfirmBooking}
               onCancelBooking={handleCancelBooking}
-              onDaysUpdated={() => {
-                captureScroll()
-                reloadBookings(selected.requirements)
-              }}
+              onDaysUpdated={() => withPreservedScrollAndFocus(panelRef.current, () => reloadBookings(selected.requirements))}
               onDeleteRequirement={handleDeleteRequirement}
               onRemoveSlot={handleRemoveSlot}
               dayLabels={dayLabels}
@@ -3946,12 +3951,8 @@ function PlannerContent({
   const [activeReq, setActiveReq] = useState<JobRequirementWithCounts | undefined>(undefined)
   // Testing feedback P — offering/confirming/cancelling a candidate here
   // moves them between groups (Available/Possible/Currently booked), which
-  // reflows this whole panel. Same capture-then-restore fix as JobsContent.
+  // reflows this whole panel. See withPreservedScrollAndFocus above.
   const panelRef = useRef<HTMLDivElement>(null)
-  const scrollRestoreRef = useRef<number | null>(null)
-  const captureScroll = useCallback(() => {
-    scrollRestoreRef.current = panelRef.current?.scrollTop ?? null
-  }, [])
   // Testing feedback R — same "fetch once at the Job level" shape as
   // JobsContent's own dayLabels.
   const { byDate: dayLabels } = useJobDayLabels(summary?.job.id)
@@ -3989,16 +3990,6 @@ function PlannerContent({
   // "who's actually holding a slot right now" counterpart it was missing.
   const { data: currentBookings, reload: reloadCurrentBookings } = useBookingsForRequirement(activeReq?.id)
 
-  useLayoutEffect(() => {
-    if (scrollRestoreRef.current != null && panelRef.current) {
-      panelRef.current.scrollTop = scrollRestoreRef.current
-      scrollRestoreRef.current = null
-      // See JobsContent's identical effect for why — a removed
-      // Confirm/Cancel/Offer button drops focus to <body> by default.
-      if (document.activeElement === document.body) panelRef.current.focus()
-    }
-  }, [pool, currentBookings])
-
   // The optional second half of "Not available" — offered right after the
   // decline is recorded, since that's the moment the call's context (did
   // they say they're out all week?) is still fresh. Skippable: not every
@@ -4014,9 +4005,10 @@ function PlannerContent({
   // existing CreateBooking call — no parallel path.
   async function handleOffer(personId: string, status: 'offered' | 'pencilled', days: string[]) {
     if (!activeReq || days.length === 0) return
-    captureScroll()
-    await offerBooking(activeReq.id, personId, days[0], days[days.length - 1], activeReq.call_time, status, days)
-    await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await offerBooking(activeReq.id, personId, days[0], days[days.length - 1], activeReq.call_time, status, days)
+      await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
+    })
   }
 
   // "Not available" — a decline recorded straight from the phone call,
@@ -4025,23 +4017,26 @@ function PlannerContent({
   // Already Asked → Declined list a real digital decline would.
   async function handleNotAvailable(personId: string, name: string) {
     if (!activeReq) return
-    captureScroll()
     const { start_date: startDate, end_date: endDate } = activeReq
-    await offerBooking(activeReq.id, personId, startDate, endDate, activeReq.call_time, 'declined')
-    await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await offerBooking(activeReq.id, personId, startDate, endDate, activeReq.call_time, 'declined')
+      await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
+    })
     setDeclinedFollowUp({ personId, name, startDate, endDate })
   }
 
   async function handleConfirmCurrentBooking(bookingId: string) {
-    captureScroll()
-    await confirmBooking(bookingId)
-    await Promise.all([reloadSummaries(), reloadCurrentBookings()])
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await confirmBooking(bookingId)
+      await Promise.all([reloadSummaries(), reloadCurrentBookings()])
+    })
   }
 
   async function handleCancelCurrentBooking(bookingId: string) {
-    captureScroll()
-    await cancelBooking(bookingId)
-    await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await cancelBooking(bookingId)
+      await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
+    })
   }
 
   if (!summary) {
