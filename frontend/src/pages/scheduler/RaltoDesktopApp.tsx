@@ -6114,7 +6114,11 @@ const SETTINGS_TABS: { key: SettingsTabKey; label: string }[] = [
   { key: 'dakboard', label: 'Dakboard feed' },
 ]
 
-function SettingsContent({
+// Exported — RaltoMobileApp reuses this exact component (via a Settings
+// entry point next to Sign out, not a 5th bottom-tab icon) rather than
+// rebuilding the same five tabs a second time. See that file's own root
+// component for the wiring.
+export function SettingsContent({
   roles,
   reloadRoles,
   vehicles,

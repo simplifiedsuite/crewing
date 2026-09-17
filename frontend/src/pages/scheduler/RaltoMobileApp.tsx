@@ -23,11 +23,32 @@ import {
   Users,
   LayoutGrid,
   LogOut,
+  Settings,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useStaffAuth } from '../../context/StaffAuthContext'
-import { useAlerts, useClients, useVenues, useJobSummaries, usePeople, useCandidates, useBookingsForRequirement, indexById, resolveAlert, offerBooking, type JobSummary } from '../../lib/hooks'
+import {
+  useAlerts,
+  useClients,
+  useVenues,
+  useJobSummaries,
+  usePeople,
+  useCandidates,
+  useBookingsForRequirement,
+  useRoles,
+  useVehicles,
+  indexById,
+  resolveAlert,
+  offerBooking,
+  type JobSummary,
+} from '../../lib/hooks'
 import type { Booking, Client, JobContact, JobRequirementWithCounts, OperationalAlert, Person } from '../../types'
+// Reuses the desktop Settings screen verbatim (all five tabs — Roles,
+// Overtime rules, Skills, Vehicles, Dakboard feed) rather than rebuilding
+// it here — mobile had no way to reach Settings at all (see the "Settings"
+// button next to Sign out below), and the fix should surface the same
+// content, not a cut-down mobile version of it.
+import { SettingsContent } from './RaltoDesktopApp'
 
 // ---------------------------------------------------------------------------
 // Ralto scheduler mobile app — merges what were ralto-today-mobile.jsx,
@@ -49,6 +70,10 @@ const TABS = [
 ] as const
 
 type TabKey = (typeof TABS)[number]['key']
+// Settings isn't a bottom-tab (five icons is cramped on a phone) — it's
+// reached via the button next to Sign out instead, same place desktop
+// keeps the two together at the bottom of its own sidebar.
+type ViewKey = TabKey | 'settings'
 
 const FALLBACK_CLIENT_COLORS = ['#453E96', '#F4511E', '#1B3A8C', '#006C35', '#E10600', '#005C30']
 
@@ -923,7 +948,7 @@ function PlannerContent({ summaries, clients, people, selectedJobId, onSelectJob
 // ---------------------------------------------------------------------------
 
 export function RaltoMobileApp() {
-  const [tab, setTab] = useState<TabKey>('today')
+  const [view, setView] = useState<ViewKey>('today')
   const [selectedPlannerJobId, setSelectedPlannerJobId] = useState<string | undefined>(undefined)
   const { logout } = useStaffAuth()
 
@@ -932,6 +957,8 @@ export function RaltoMobileApp() {
   const { data: venuesList } = useVenues()
   const { data: peopleList } = usePeople()
   const { data: alerts, reload: reloadAlerts } = useAlerts()
+  const { data: rolesList, reload: reloadRoles } = useRoles()
+  const { data: vehiclesList, reload: reloadVehicles } = useVehicles()
 
   const clients = useMemo(() => indexById(clientsList), [clientsList])
   const venues = useMemo(() => indexById(venuesList), [venuesList])
@@ -939,13 +966,25 @@ export function RaltoMobileApp() {
 
   const openJobInPlanner = (jobId: string) => {
     setSelectedPlannerJobId(jobId)
-    setTab('planner')
+    setView('planner')
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#fff', fontFamily: 'var(--font-body)', display: 'flex', flexDirection: 'column' }}>
+    <div className="ralto-mobile-shell" style={{ background: '#fff', fontFamily: 'var(--font-body)', display: 'flex', flexDirection: 'column' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        /* iOS Safari's toolbar shows/hides as you scroll, changing the
+           actual visible viewport height without 100vh ever updating to
+           match — a min-height: 100vh shell can end up taller than what's
+           actually on screen, pushing the bottom tab bar below the fold
+           (looks like it "disappears", though it's just off-screen).
+           100dvh tracks the real, currently-visible height instead; the
+           100vh line stays first as a fallback for browsers that don't
+           understand dvh, which then simply ignore the second line. */
+        .ralto-mobile-shell {
+          min-height: 100vh;
+          min-height: 100dvh;
+        }
         :root {
           --font-display: 'Inter', sans-serif;
           --font-body: 'Inter', sans-serif;
@@ -966,25 +1005,37 @@ export function RaltoMobileApp() {
         input::placeholder { color: var(--ink-muted); opacity: 1; }
       `}</style>
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px 20px 0' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 16, padding: '10px 20px 0' }}>
+        {/* Settings has no bottom-tab icon (five is cramped on a phone) —
+            this is the mobile equivalent of desktop's sidebar, which keeps
+            Settings right next to Sign out too. Everything that lives in
+            Settings (the Dakboard/iCal feed link included) was otherwise
+            unreachable on mobile. */}
+        <button
+          onClick={() => setView('settings')}
+          style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', color: view === 'settings' ? 'var(--primary)' : 'var(--ink-muted)', fontFamily: 'var(--font-body)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
+        >
+          <Settings size={13} /> Settings
+        </button>
         <button onClick={logout} style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', color: 'var(--ink-muted)', fontFamily: 'var(--font-body)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
           <LogOut size={13} /> Sign out
         </button>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {tab === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} />}
-        {tab === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobInPlanner} />}
-        {tab === 'jobs' && <JobsContent summaries={summaries} clients={clients} venues={venues} people={people} reloadSummaries={reloadSummaries} />}
-        {tab === 'planner' && <PlannerContent summaries={summaries} clients={clients} people={people} selectedJobId={selectedPlannerJobId} onSelectJob={setSelectedPlannerJobId} reloadSummaries={reloadSummaries} />}
+        {view === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} />}
+        {view === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobInPlanner} />}
+        {view === 'jobs' && <JobsContent summaries={summaries} clients={clients} venues={venues} people={people} reloadSummaries={reloadSummaries} />}
+        {view === 'planner' && <PlannerContent summaries={summaries} clients={clients} people={people} selectedJobId={selectedPlannerJobId} onSelectJob={setSelectedPlannerJobId} reloadSummaries={reloadSummaries} />}
+        {view === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} vehicles={vehiclesList} reloadVehicles={reloadVehicles} />}
       </div>
 
       <div style={{ display: 'flex', borderTop: '1px solid var(--line)', background: '#fff', padding: '10px 0 16px' }}>
         {TABS.map((t) => {
           const Icon = t.icon
-          const active = tab === t.key
+          const active = view === t.key
           return (
-            <button key={t.key} onClick={() => setTab(t.key)} style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+            <button key={t.key} onClick={() => setView(t.key)} style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
               <Icon size={20} color={active ? 'var(--primary)' : 'var(--ink-muted)'} />
               <span style={{ fontFamily: 'var(--font-body)', fontSize: 11, fontWeight: 600, color: active ? 'var(--primary)' : 'var(--ink-muted)' }}>{t.label}</span>
             </button>
