@@ -56,10 +56,23 @@ func scanCrewBooking(rows pgx.Rows, b *crewBookingResponse) error {
 // member's "Next job". Excluding j.status and j.end_date here (not just
 // b.status) is what actually fixes it — a job-level status/date filter, not
 // a booking-level one, matching what the report asked for.
+//
+// Pencilled — shown to staff only, per the product decision: a Pencil is a
+// soft hold, and freelancers make a real accept/decline decision through
+// the offer flow, so a Pencil should never look like something they've
+// already been asked about. Staff don't go through that offer/confirm
+// step at all (they can be allocated directly), so a Pencil is already
+// closer to their real working plan, with no separate moment where
+// they'd otherwise learn about it. Scoped with an EXISTS against the
+// caller's own employment_type rather than a second query, since it only
+// ever needs to gate this one added status value.
 func (a *API) ListMyBookings(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	rows, err := a.DB.Query(r.Context(),
 		crewBookingSelect+` WHERE b.person_id = $1 AND b.status NOT IN ('declined', 'cancelled') AND b.organisation_id = $2
+		                     AND (b.status != 'pencilled' OR EXISTS (
+		                           SELECT 1 FROM people p WHERE p.id = $1 AND p.organisation_id = $2 AND p.employment_type = 'staff'
+		                         ))
 		                     AND j.status NOT IN ('complete', 'cancelled') AND j.end_date >= CURRENT_DATE
 		                     ORDER BY b.start_date`,
 		claims.PersonID, currentOrgID)

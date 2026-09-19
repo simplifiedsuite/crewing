@@ -25,6 +25,11 @@ const statusStyle: Record<string, { color: string; bg: string; label: string; Ic
   offered: { color: 'var(--attention)', bg: 'var(--attention-bg)', label: 'Awaiting response', Icon: Clock },
   declined: { color: 'var(--danger)', bg: 'var(--danger-bg)', label: 'Declined', Icon: X },
   complete: { color: 'var(--success)', bg: 'var(--success-bg)', label: 'Complete', Icon: CheckCircle2 },
+  // Staff only — ListMyBookings excludes Pencilled for freelancers, so
+  // this is only ever reached for a staff session. Same Pencil icon/tone
+  // as the desktop Planner's own per-booking status treatment
+  // (BOOKING_STATUS_ICON), so it reads consistently across both apps.
+  pencilled: { color: 'var(--primary)', bg: 'var(--tint)', label: 'Pencilled', Icon: Pencil },
 }
 
 function StatusPill({ status }: { status: string }) {
@@ -65,7 +70,14 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
   const [respondingId, setRespondingId] = useState<string | null>(null)
 
   const pendingOffers = bookings.filter((b) => b.status === 'offered')
-  const confirmed = bookings.filter((b) => b.status === 'confirmed').sort((a, b) => a.start_date.localeCompare(b.start_date))
+  // Pencilled only ever reaches this list for a staff session — the crew
+  // API already excludes it for freelancers (ListMyBookings), so no
+  // employment_type check is needed here. Treated as real upcoming work
+  // (sorted in alongside Confirmed, eligible to be "Next job"), same
+  // status-only visibility this product decision calls for — no separate
+  // accept/decline action, StatusPill/the row icon is what marks it as
+  // Pencilled rather than Confirmed.
+  const confirmed = bookings.filter((b) => b.status === 'confirmed' || b.status === 'pencilled').sort((a, b) => a.start_date.localeCompare(b.start_date))
   const nextJob = confirmed[0] ?? pendingOffers[0]
   const upcoming = nextJob ? confirmed.filter((b) => b.id !== nextJob.id) : confirmed
 
