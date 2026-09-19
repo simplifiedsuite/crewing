@@ -49,7 +49,7 @@ import type { Booking, Client, JobContact, JobRequirementWithCounts, Operational
 // it here — mobile had no way to reach Settings at all (see the "Settings"
 // button next to Sign out below), and the fix should surface the same
 // content, not a cut-down mobile version of it.
-import { SettingsContent } from './RaltoDesktopApp'
+import { SettingsContent, formatDate } from './RaltoDesktopApp'
 
 // ---------------------------------------------------------------------------
 // Ralto scheduler mobile app — merges what were ralto-today-mobile.jsx,
@@ -861,6 +861,13 @@ function JobChip({ summary, client, fallbackIndex, active, onClick }: { summary:
     <button onClick={onClick} style={{ position: 'relative', flexShrink: 0, background: active ? 'var(--primary)' : '#fff', border: active ? 'none' : '1px solid var(--line)', borderRadius: 14, padding: '10px 14px 10px 18px', textAlign: 'left', cursor: 'pointer', minWidth: 148, overflow: 'hidden' }}>
       <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientColor(client, fallbackIndex), opacity: active ? 0.85 : 1 }} />
       <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 13.5, color: active ? '#fff' : 'var(--ink)' }}>{summary.job.name}</div>
+      {/* Same tile-date fix as the desktop Planner's JobChip — collapsed to
+          a single date for a single-day job. */}
+      <div style={{ fontFamily: 'var(--font-body)', fontVariantNumeric: 'tabular-nums', fontSize: 11.5, marginTop: 2, color: active ? 'rgba(255,255,255,0.7)' : 'var(--ink-muted)' }}>
+        {summary.job.start_date === summary.job.end_date
+          ? formatDate(summary.job.start_date)
+          : `${formatDate(summary.job.start_date)} – ${formatDate(summary.job.end_date)}`}
+      </div>
       <div style={{ fontFamily: 'var(--font-body)', fontVariantNumeric: 'tabular-nums', fontSize: 12, marginTop: 3, color: active ? 'rgba(255,255,255,0.85)' : complete ? 'var(--success)' : 'var(--attention)', fontWeight: 600 }}>
         {confirmed}/{required} confirmed
       </div>

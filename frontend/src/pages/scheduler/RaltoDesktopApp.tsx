@@ -225,7 +225,10 @@ function clientColor(client: Client | undefined, fallbackIndex: number): string 
 // this is the one place that gets turned into the requested DD/MM/YY
 // display format, so every call site stays consistent by construction
 // rather than by remembering to match the others.
-function formatDate(iso: string): string {
+// Exported — RaltoMobileApp's own JobChip reuses this rather than a second
+// DD/MM/YY implementation drifting out of sync with this one (same reason
+// it already imports SettingsContent from here instead of duplicating it).
+export function formatDate(iso: string): string {
   const [y, m, d] = iso.split('-')
   return `${d}/${m}/${y.slice(2)}`
 }
