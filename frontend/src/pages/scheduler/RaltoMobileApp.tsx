@@ -353,7 +353,7 @@ function AttentionCard({ alert, onResolve }: { alert: OperationalAlert; onResolv
   )
 }
 
-function TodayContent({ summaries, clients, alerts, reloadAlerts }: { summaries: JobSummary[]; clients: Record<string, Client>; alerts: OperationalAlert[]; reloadAlerts: () => void }) {
+function TodayContent({ summaries, clients, alerts, reloadAlerts, onOpenJob }: { summaries: JobSummary[]; clients: Record<string, Client>; alerts: OperationalAlert[]; reloadAlerts: () => void; onOpenJob: (id: string) => void }) {
   const { user } = useStaffAuth()
   const liveSummaries = useMemo(() => summaries.filter((s) => isLiveToday(s.job)), [summaries])
   const totalRequired = liveSummaries.reduce((sum, s) => sum + s.required, 0)
@@ -403,7 +403,11 @@ function TodayContent({ summaries, clients, alerts, reloadAlerts }: { summaries:
           const client = clients[s.job.client_id]
           const color = complete ? 'var(--success)' : 'var(--attention)'
           return (
-            <div key={s.job.id} style={{ position: 'relative', border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '12px 14px 12px 18px', overflow: 'hidden' }}>
+            <button
+              key={s.job.id}
+              onClick={() => onOpenJob(s.job.id)}
+              style={{ position: 'relative', width: '100%', textAlign: 'left', border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '12px 14px 12px 18px', overflow: 'hidden', cursor: 'pointer' }}
+            >
               <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientColor(client, i) }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                 <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 14, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.job.name}</div>
@@ -412,7 +416,7 @@ function TodayContent({ summaries, clients, alerts, reloadAlerts }: { summaries:
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
                 {s.confirmed}/{s.required} confirmed
               </div>
-            </div>
+            </button>
           )
         })}
       </div>
@@ -1102,7 +1106,7 @@ export function RaltoMobileApp() {
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {view === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} />}
+        {view === 'today' && <TodayContent summaries={summaries} clients={clients} alerts={alerts} reloadAlerts={reloadAlerts} onOpenJob={openJobInPlanner} />}
         {view === 'calendar' && <CalendarContent summaries={summaries} clients={clients} onOpenJob={openJobInPlanner} />}
         {view === 'jobs' && <JobsContent summaries={summaries} clients={clients} venues={venues} people={people} reloadSummaries={reloadSummaries} />}
         {view === 'planner' && (
