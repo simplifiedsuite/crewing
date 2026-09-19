@@ -46,10 +46,22 @@ func scanCrewBooking(rows pgx.Rows, b *crewBookingResponse) error {
 // ListMyBookings returns everything except declined/cancelled — the crew
 // app's Home screen splits pending offers from confirmed upcoming work
 // itself based on `status`.
+//
+// Testing feedback AA — Booking.status and Job.status are separate axes
+// (see JobsContent's own "internal progress" vs. derived-tag comment on
+// the scheduler side): marking a Job complete or cancelled never touches
+// its Bookings' own status, so a Booking can sit at status='confirmed'
+// forever after its Job is archived. Confirmed directly: a real completed,
+// past-dated Job ("MDL Derby Screening") was still showing as the crew
+// member's "Next job". Excluding j.status and j.end_date here (not just
+// b.status) is what actually fixes it — a job-level status/date filter, not
+// a booking-level one, matching what the report asked for.
 func (a *API) ListMyBookings(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	rows, err := a.DB.Query(r.Context(),
-		crewBookingSelect+` WHERE b.person_id = $1 AND b.status NOT IN ('declined', 'cancelled') AND b.organisation_id = $2 ORDER BY b.start_date`,
+		crewBookingSelect+` WHERE b.person_id = $1 AND b.status NOT IN ('declined', 'cancelled') AND b.organisation_id = $2
+		                     AND j.status NOT IN ('complete', 'cancelled') AND j.end_date >= CURRENT_DATE
+		                     ORDER BY b.start_date`,
 		claims.PersonID, currentOrgID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list bookings")

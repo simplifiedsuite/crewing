@@ -7,16 +7,25 @@ body {
 }
 
 /* Shared by every mobile-width app shell (RaltoMobileApp, RaltoCrewApp) —
-   iOS Safari's own toolbar shows/hides as you scroll, changing the actual
-   visible viewport height without 100vh ever updating to match. A
-   min-height: 100vh shell can end up taller than what's actually on
-   screen, pushing a bottom-pinned nav bar below the fold (it "disappears"
-   even though the page content hasn't changed). 100dvh tracks the real,
+   each is a flex column with a scrollable content region (flex: 1;
+   overflowY: auto) and a bottom-pinned nav bar as its last child. That only
+   stays pinned if the shell itself is capped at exactly the viewport
+   height, forcing the content region to be what scrolls internally —
+   min-height doesn't cap anything, so as soon as a screen's content is
+   taller than the viewport (e.g. several upcoming jobs), the whole shell
+   grows past the viewport and the nav bar scrolls away with everything
+   else instead of staying put. Confirmed directly: with 4 real upcoming
+   bookings, document.documentElement.scrollHeight (1025px) exceeded the
+   812px viewport and the nav bar was off-screen below the fold from the
+   very first paint, not something a refresh would fix.
+   height (not min-height) is what actually keeps it pinned. iOS Safari's
+   own toolbar shows/hides as you scroll, changing the visible viewport
+   height without 100vh ever updating to match — 100dvh tracks the real,
    currently-visible height instead; the 100vh line stays first as a
    fallback for browsers that don't understand dvh, which then simply
    ignore the second line. One shared class here rather than duplicating
    the rule in each app's own inline <style> block. */
 .dvh-shell {
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
 }

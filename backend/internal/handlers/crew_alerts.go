@@ -18,6 +18,12 @@ type crewAlertResponse struct {
 // themself owns (AutoSuggestedBooking and the rest are scheduler-only
 // concerns raised against a Job, not a specific person). Powers the crew
 // Home screen's "needs your attention" section alongside pending offers.
+//
+// Testing feedback AA — same job-status/date gap as ListMyBookings: an
+// unacknowledged_update alert only ever gets resolved by the crew member
+// acknowledging it (see AcknowledgeBooking), never by the Job it's against
+// completing or being cancelled, so a stale alert against an archived Job
+// could otherwise sit in "needs your attention" indefinitely.
 func (a *API) ListMyOpenAlerts(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	rows, err := a.DB.Query(r.Context(), `
@@ -26,6 +32,7 @@ func (a *API) ListMyOpenAlerts(w http.ResponseWriter, r *http.Request) {
 		JOIN jobs j ON j.id = oa.job_id
 		JOIN bookings b ON b.id = oa.related_entity_id
 		WHERE oa.type = 'unacknowledged_update' AND oa.status = 'open' AND b.person_id = $1 AND oa.organisation_id = $2
+		      AND j.status NOT IN ('complete', 'cancelled') AND j.end_date >= CURRENT_DATE
 		ORDER BY oa.created_at DESC`, claims.PersonID, currentOrgID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list alerts")
