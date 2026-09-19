@@ -735,9 +735,66 @@ function AddProspectiveEventForm({
   const [dateStart, setDateStart] = useState(editingEvent?.date_start ?? initialDateStart ?? todayISO())
   const [dateEnd, setDateEnd] = useState(editingEvent?.date_end ?? initialDateStart ?? todayISO())
   const [clientId, setClientId] = useState(editingEvent?.client_id ?? '')
+  const [clientSelectValue, setClientSelectValue] = useState(editingEvent?.client_id ?? '')
+  // Bug fix — same local-only gap JobCreateForm's Client picker had: this
+  // read Ralto's local `clients` mirror only, so a Core client never
+  // matched through a Monday fetch (e.g. Gravity Media) wouldn't appear
+  // here either. Same fix, same shape — see JobCreateForm's own coreClients
+  // for the full reasoning.
+  const [coreClients, setCoreClients] = useState<CoreClient[]>([])
+  const [coreClientsError, setCoreClientsError] = useState<string | undefined>(undefined)
+  const [clientLinking, setClientLinking] = useState(false)
+  const [linkedClient, setLinkedClient] = useState<Client | undefined>(undefined)
   const [notes, setNotes] = useState(editingEvent?.notes ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    let cancelled = false
+    listCoreClients()
+      .then((list) => {
+        if (!cancelled) setCoreClients(list)
+      })
+      .catch(() => {
+        if (!cancelled) setCoreClientsError('Could not reach Simplified Suite Core — showing previously used clients only.')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const clientOptions = useMemo(() => {
+    const local = !linkedClient || clients.some((c) => c.id === linkedClient.id) ? clients : [...clients, linkedClient]
+    const linkedCoreIds = new Set(local.map((c) => c.core_client_id).filter((id): id is string => Boolean(id)))
+    const liveCore = coreClients.filter((c) => !linkedCoreIds.has(c.id))
+    return { local, liveCore }
+  }, [clients, linkedClient, coreClients])
+
+  async function handleClientSelect(value: string) {
+    setClientSelectValue(value)
+    if (!value) {
+      setClientId('')
+      return
+    }
+    if (!value.startsWith('core:')) {
+      setClientId(value)
+      return
+    }
+    const core = coreClients.find((c) => c.id === value.slice('core:'.length))
+    if (!core) return
+    setClientLinking(true)
+    try {
+      const local = await linkCoreClient({ core_client_id: core.id, name: core.name, brand_color_hex: core.brand_color_hex, website: core.website })
+      setLinkedClient(local)
+      setClientId(local.id)
+      setClientSelectValue(local.id)
+    } catch {
+      setCoreClientsError('Could not link that client — try again.')
+      setClientSelectValue(clientId)
+    } finally {
+      setClientLinking(false)
+    }
+  }
 
   const inputStyle = { border: '1px solid var(--line)', borderRadius: 8, padding: '7px 10px', fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink)', background: '#fff' }
 
@@ -776,16 +833,31 @@ function AddProspectiveEventForm({
         </label>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
           <span style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }}>Client</span>
-          <select value={clientId} onChange={(e) => setClientId(e.target.value)} style={inputStyle}>
+          <select value={clientSelectValue} onChange={(e) => handleClientSelect(e.target.value)} disabled={clientLinking} style={{ ...inputStyle, opacity: clientLinking ? 0.7 : 1 }}>
             <option value="">Unknown / TBC</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
+            {clientOptions.liveCore.length > 0 && (
+              <optgroup label="Clients (Simplified Suite)">
+                {clientOptions.liveCore.map((c) => (
+                  <option key={`core:${c.id}`} value={`core:${c.id}`}>
+                    {c.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {clientOptions.local.length > 0 && (
+              <optgroup label="Previously used">
+                {clientOptions.local.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </label>
       </div>
+      {clientLinking && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }}>Linking…</div>}
+      {coreClientsError && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }}>{coreClientsError}</div>}
       <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" style={inputStyle} />
       {error && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
