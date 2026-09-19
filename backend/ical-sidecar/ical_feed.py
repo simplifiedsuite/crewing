@@ -73,6 +73,21 @@ class Booking:
     shifts: list[BookingShift] = field(default_factory=list)
     notes: Optional[str] = None
     last_modified: Optional[datetime] = None
+    # Fallback fields, used only when shifts is empty — a Booking created
+    # before syncBookingShifts existed (see booking_shifts.go's own "item L"
+    # comment) has no BookingShift rows at all. Without these the booking
+    # was previously just dropped from the feed (see git history), not
+    # rendered as anything — the exact class of live commitment silently
+    # going missing that this feed exists to prevent. start_date/end_date
+    # are the Booking's own (already the precise days that person covers,
+    # same source JobCreateForm/offerBooking write), not the Job's — a
+    # partial-job booking's own range is more precise than the Job's full
+    # span would be.
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    call_time: Optional[str] = None
+    venue: Optional[str] = None
+    timezone: str = "Europe/London"
 
 
 @dataclass
@@ -160,19 +175,56 @@ def _date_only(date_str: str, plus_days: int = 0) -> str:
 
 
 # ---------------------------------------------------------------------------
-# VEVENT generation — one per BookingShift
+# VEVENT generation — one per contiguous run of uniform BookingShifts, not
+# one per shift. Per-day BookingShift rows exist to represent day-varying
+# call times (see the module docstring) — but the per-day booking coverage
+# feature also creates one identical 09:00-17:00 "All days" shift per day by
+# default (see booking_shifts.go's defaultShiftTimes), which is the common
+# case for a booking nobody has actually set day-varying times on. Rendering
+# THAT as N separate daily VEVENTs is what produced the reported bug: a
+# single multi-day booking splitting into a separate event per day in a
+# subscriber's calendar app, instead of the one continuous event the same
+# multi-day span renders as everywhere else the app shows it. Grouping
+# contiguous, identical-time shifts back into one VEVENT fixes that while
+# still rendering genuinely day-varying call times (or an actual gap, e.g.
+# covering day 1 and day 3 but not day 2 of a 3-day job) as separate events,
+# since those breaks are real information a subscriber needs to see.
 # ---------------------------------------------------------------------------
 
 
-def _shift_to_vevent(booking: Booking, shift: BookingShift) -> str:
-    uid = f"ralto-shift-{shift.id}@ralto.app"
-    dtstamp = _dtstamp_now()
-    dtstart = _dt_local(shift.date, shift.call_time)
-    dtend = _dt_local(shift.date, shift.end_time)
-    status = ICS_STATUS.get(booking.status, "TENTATIVE")
+def _group_contiguous_shifts(shifts: list[BookingShift]) -> list[list[BookingShift]]:
+    """Groups shifts into runs where each run is consecutive calendar days
+    with identical call_time/end_time/venue/timezone. A run of length 1 is
+    just an ordinary single-day shift — venue is included in the grouping
+    key (not just times) since a run spanning two different venues would
+    render one of them under the wrong LOCATION if merged."""
+    ordered = sorted(shifts, key=lambda s: s.date)
+    runs: list[list[BookingShift]] = []
+    for shift in ordered:
+        if runs:
+            prev = runs[-1][-1]
+            prev_date = datetime.strptime(prev.date, "%Y-%m-%d")
+            shift_date = datetime.strptime(shift.date, "%Y-%m-%d")
+            contiguous = shift_date == prev_date + timedelta(days=1)
+            uniform = (
+                shift.call_time == prev.call_time
+                and shift.end_time == prev.end_time
+                and shift.venue == prev.venue
+                and shift.timezone == prev.timezone
+            )
+            if contiguous and uniform:
+                runs[-1].append(shift)
+                continue
+        runs.append([shift])
+    return runs
 
+
+def _booking_text(booking: Booking) -> tuple[str, str, str]:
+    """SUMMARY/DESCRIPTION/STATUS are identical regardless of whether a
+    booking renders as one merged run, several runs, or the no-shifts
+    fallback — factored out once rather than duplicated at each call site."""
     summary = _escape_text(f"{booking.job_name} ({booking.role})")
-    location = _escape_text(shift.venue)
+    status = ICS_STATUS.get(booking.status, "TENTATIVE")
 
     description_parts = [f"Client: {booking.client_name}", f"Role: {booking.role}"]
     if booking.status == "offered":
@@ -185,15 +237,29 @@ def _shift_to_vevent(booking: Booking, shift: BookingShift) -> str:
     # RFC 5545 newline escape (\n) — joining first and escaping the whole
     # string afterwards would double-escape that backslash into \\n.
     description = "\\n".join(_escape_text(part) for part in description_parts)
+    return summary, description, status
 
+
+def _run_to_vevent(booking: Booking, run: list[BookingShift]) -> str:
+    first, last = run[0], run[-1]
+    # Stable across the run's own lifetime: the first shift's id doesn't
+    # change if a later day gets added/removed from the same contiguous
+    # uniform run, so a calendar app sees an UPDATE to the same event
+    # (matching LAST-MODIFIED) rather than a delete+recreate.
+    uid = f"ralto-shift-{first.id}@ralto.app"
+    dtstamp = _dtstamp_now()
+    dtstart = _dt_local(first.date, first.call_time)
+    dtend = _dt_local(last.date, last.end_time)
+    summary, description, status = _booking_text(booking)
+    location = _escape_text(first.venue)
     last_modified = (booking.last_modified or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
 
     lines = [
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{dtstamp}",
-        f"DTSTART;TZID={shift.timezone}:{dtstart}",
-        f"DTEND;TZID={shift.timezone}:{dtend}",
+        f"DTSTART;TZID={first.timezone}:{dtstart}",
+        f"DTEND;TZID={first.timezone}:{dtend}",
         f"SUMMARY:{summary}",
         f"LOCATION:{location}",
         f"DESCRIPTION:{description}",
@@ -202,6 +268,56 @@ def _shift_to_vevent(booking: Booking, shift: BookingShift) -> str:
         "END:VEVENT",
     ]
     return "\r\n".join(_fold_line(l) for l in lines)
+
+
+def _booking_fallback_vevent(booking: Booking) -> Optional[str]:
+    """Renders a booking that has no BookingShift rows at all (created
+    before syncBookingShifts existed to keep them populated — see
+    booking_shifts.go) as a single VEVENT spanning the Booking's own
+    start_date/end_date, instead of the booking being silently dropped from
+    the feed entirely, which is what happened before this fix (confirmed
+    directly: 'UEL PFC Levski Sofia', a real live confirmed booking, had
+    zero shift rows and was simply absent from the subscriber's feed —
+    worse than the reported splitting bug, since a missing booking on a
+    personal calendar is exactly the kind of gap that causes a real
+    double-booking)."""
+    if not booking.start_date or not booking.end_date:
+        return None
+    uid = f"ralto-booking-{booking.id}@ralto.app"
+    dtstamp = _dtstamp_now()
+    call = (booking.call_time or "09:00").strip() or "09:00"
+    try:
+        end = (datetime.strptime(call, "%H:%M") + timedelta(hours=8)).strftime("%H:%M")
+    except ValueError:
+        call, end = "09:00", "17:00"
+    dtstart = _dt_local(booking.start_date, call)
+    dtend = _dt_local(booking.end_date, end)
+    summary, description, status = _booking_text(booking)
+    location = _escape_text(booking.venue or "Venue TBC")
+    last_modified = (booking.last_modified or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+
+    lines = [
+        "BEGIN:VEVENT",
+        f"UID:{uid}",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART;TZID={booking.timezone}:{dtstart}",
+        f"DTEND;TZID={booking.timezone}:{dtend}",
+        f"SUMMARY:{summary}",
+        f"LOCATION:{location}",
+        f"DESCRIPTION:{description}",
+        f"STATUS:{status}",
+        f"LAST-MODIFIED:{last_modified}",
+        "END:VEVENT",
+    ]
+    return "\r\n".join(_fold_line(l) for l in lines)
+
+
+def _booking_to_vevents(booking: Booking) -> list[str]:
+    if not booking.shifts:
+        fallback = _booking_fallback_vevent(booking)
+        return [fallback] if fallback else []
+    runs = _group_contiguous_shifts(booking.shifts)
+    return [_run_to_vevent(booking, run) for run in runs]
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +335,7 @@ def generate_ics_feed(person: Person, bookings: list[Booking]) -> str:
     """
     vevents = []
     for booking in bookings:
-        for shift in booking.shifts:
-            vevents.append(_shift_to_vevent(booking, shift))
+        vevents.extend(_booking_to_vevents(booking))
 
     header = [
         "BEGIN:VCALENDAR",
@@ -408,6 +523,52 @@ if __name__ == "__main__":
                 BookingShift(id="sh-riyadh-1", date="2026-12-05", call_time="09:00", end_time="22:00", venue="Kingdom Arena, Riyadh", timezone="Asia/Riyadh"),
             ],
         ),
+        # Regression case for the reported bug: 5 identical "All days"
+        # 09:00-17:00 default shifts (see booking_shifts.go's
+        # defaultShiftTimes) on consecutive days — must collapse to ONE
+        # VEVENT spanning 10-14 Oct, not 5 separate daily events.
+        Booking(
+            id="bk-sabeh-slavia",
+            job_name="FC Sabeh v Slavia",
+            client_name="UEFA",
+            role="Engineering Manager",
+            status="confirmed",
+            shifts=[
+                BookingShift(id="sh-sabeh-1", date="2026-10-10", call_time="09:00", end_time="17:00", venue="Olympic Stadium", timezone="Asia/Baku"),
+                BookingShift(id="sh-sabeh-2", date="2026-10-11", call_time="09:00", end_time="17:00", venue="Olympic Stadium", timezone="Asia/Baku"),
+                BookingShift(id="sh-sabeh-3", date="2026-10-12", call_time="09:00", end_time="17:00", venue="Olympic Stadium", timezone="Asia/Baku"),
+                BookingShift(id="sh-sabeh-4", date="2026-10-13", call_time="09:00", end_time="17:00", venue="Olympic Stadium", timezone="Asia/Baku"),
+                BookingShift(id="sh-sabeh-5", date="2026-10-14", call_time="09:00", end_time="17:00", venue="Olympic Stadium", timezone="Asia/Baku"),
+            ],
+        ),
+        # Genuinely non-uniform: covering day 1 and day 3 of a 3-day job,
+        # not day 2 — must stay TWO separate VEVENTs, not collapse into one
+        # block spanning day 1-3 (which would wrongly imply covering the
+        # gap day too).
+        Booking(
+            id="bk-gap-job",
+            job_name="MCWFC v Arsenal",
+            client_name="Man City",
+            role="Camera Op",
+            status="confirmed",
+            shifts=[
+                BookingShift(id="sh-gap-1", date="2026-10-03", call_time="09:00", end_time="17:00", venue="Etihad Stadium"),
+                BookingShift(id="sh-gap-3", date="2026-10-05", call_time="09:00", end_time="17:00", venue="Etihad Stadium"),
+            ],
+        ),
+        # No BookingShift rows at all — a booking created before
+        # syncBookingShifts existed. Must render as ONE fallback VEVENT
+        # spanning the Booking's own start_date/end_date, not be dropped.
+        Booking(
+            id="bk-legacy-no-shifts",
+            job_name="UEL PFC Levski Sofia",
+            client_name="UEFA",
+            role="Tech Manager",
+            status="confirmed",
+            start_date="2026-09-15",
+            end_date="2026-09-18",
+            venue="Etihad Stadium",
+        ),
     ]
 
     feed = generate_ics_feed(person, bookings)
@@ -419,6 +580,17 @@ if __name__ == "__main__":
             print(f"  ISSUE: {p}")
     else:
         print("  No structural issues found.")
+
+    print("\n=== Regression checks ===")
+    sabeh_events = feed.count("FC Sabeh v Slavia")
+    gap_events = feed.count("MCWFC v Arsenal")
+    legacy_events = feed.count("UEL PFC Levski Sofia")
+    assert sabeh_events == 1, f"expected FC Sabeh v Slavia to collapse to 1 VEVENT, got {sabeh_events}"
+    assert gap_events == 2, f"expected the day1+day3 gap booking to stay 2 VEVENTs, got {gap_events}"
+    assert legacy_events == 1, f"expected the no-shifts legacy booking to render as 1 fallback VEVENT, got {legacy_events}"
+    print("  FC Sabeh v Slavia (5 uniform contiguous shifts) -> 1 VEVENT: OK")
+    print("  MCWFC v Arsenal (day 1 + day 3, gap on day 2) -> 2 VEVENTs: OK")
+    print("  UEL PFC Levski Sofia (0 shift rows) -> 1 fallback VEVENT: OK")
 
     print("\n=== Feed preview ===")
     print(feed)

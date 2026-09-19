@@ -64,13 +64,15 @@ def feed(token: str):
             # docstring for why that beats a text-prefix hack).
             cur.execute(
                 """
-                SELECT b.id, b.status, b.notes,
-                       j.name AS job_name, c.name AS client_name, ro.name AS role
+                SELECT b.id, b.status, b.notes, b.start_date, b.end_date, b.call_time,
+                       j.name AS job_name, c.name AS client_name, ro.name AS role,
+                       COALESCE(v.name, 'Venue TBC') AS venue, COALESCE(v.timezone, 'UTC') AS timezone
                 FROM bookings b
                 JOIN job_requirements jr ON jr.id = b.job_requirement_id
                 JOIN jobs j ON j.id = jr.job_id
                 JOIN clients c ON c.id = j.client_id
                 JOIN roles ro ON ro.id = jr.role_id
+                LEFT JOIN venues v ON v.id = j.venue_id
                 WHERE b.person_id = %s AND b.status IN ('confirmed', 'offered', 'pencilled')
                 """,
                 (person_row["id"],),
@@ -105,8 +107,11 @@ def feed(token: str):
                     )
                     for s in shift_rows
                 ]
-                if not shifts:
-                    continue  # no shifts recorded yet — nothing to put on a calendar
+                # No shifts recorded (a booking created before
+                # syncBookingShifts existed — see booking_shifts.go) is NOT
+                # skipped: ical_feed.py's fallback path renders it as one
+                # VEVENT spanning the Booking's own start_date/end_date
+                # instead of it silently going missing from the feed.
                 bookings.append(
                     Booking(
                         id=str(row["id"]),
@@ -116,6 +121,11 @@ def feed(token: str):
                         status=row["status"],
                         notes=row["notes"],
                         shifts=shifts,
+                        start_date=str(row["start_date"]) if row["start_date"] else None,
+                        end_date=str(row["end_date"]) if row["end_date"] else None,
+                        call_time=str(row["call_time"])[:5] if row["call_time"] else None,
+                        venue=row["venue"],
+                        timezone=row["timezone"],
                     )
                 )
     finally:
