@@ -344,8 +344,17 @@ function addDays(date: Date, n: number): Date {
 function sameDay(a: Date, b: Date): boolean {
   return a.toDateString() === b.toDateString()
 }
+// Bug fix — found live-testing this screen: Date.toISOString() converts
+// through UTC, so a local midnight in any timezone ahead of UTC (e.g. BST)
+// rolls back to the previous day once converted, shifting every date match
+// here by one day (a booking on the 26th lit up the 27th's dot instead).
+// Building the string from the Date's own local getFullYear/Month/Date
+// avoids the UTC round-trip entirely.
 function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 function getMonthWeeks(refDate: Date): Date[][] {
   const year = refDate.getFullYear()
