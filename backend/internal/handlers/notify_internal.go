@@ -44,10 +44,22 @@ func (a *API) notifyPerson(ctx context.Context, personID string, notifType model
 	// recorded the notification either way.
 	var email *string
 	var firstName string
-	if err := a.DB.QueryRow(ctx, `SELECT email, first_name FROM people WHERE id = $1`, personID).Scan(&email, &firstName); err != nil {
+	var channelsJSON *string
+	if err := a.DB.QueryRow(ctx, `SELECT email, first_name, notification_channels FROM people WHERE id = $1`, personID).Scan(&email, &firstName, &channelsJSON); err != nil {
 		return err
 	}
 	if email == nil {
+		return nil
+	}
+	// Bug fix — the crew Profile screen's own "Email" toggle
+	// (notification_channels, written by UpdateMyProfile) was saved but
+	// never read anywhere: every one of the six trigger points funnels
+	// through here per this function's own comment, and this was the only
+	// place that could have honoured it. Someone unchecking Email kept
+	// getting emails regardless. Same default-on convention the crew form
+	// itself uses (ProfileEditForm's `notifyEmail !== false`) — unset or
+	// unparseable means on, only an explicit false turns it off.
+	if !emailChannelEnabled(channelsJSON) {
 		return nil
 	}
 
@@ -64,4 +76,24 @@ func (a *API) notifyPerson(ctx context.Context, personID string, notifType model
 		return dbErr
 	}
 	return sendErr
+}
+
+// emailChannelEnabled mirrors ProfileEditForm's own read of the same field
+// (`initialChannels.email !== false`) — null (never set), a malformed value,
+// or an object with no "email" key all mean on; only an explicit false
+// means someone actually turned it off.
+func emailChannelEnabled(channelsJSON *string) bool {
+	if channelsJSON == nil {
+		return true
+	}
+	var channels struct {
+		Email *bool `json:"email"`
+	}
+	if err := json.Unmarshal([]byte(*channelsJSON), &channels); err != nil {
+		return true
+	}
+	if channels.Email == nil {
+		return true
+	}
+	return *channels.Email
 }

@@ -375,10 +375,28 @@ func (a *API) UpdateBooking(w http.ResponseWriter, r *http.Request) {
 	callTimeChanged := (previousCallTime == nil) != (req.CallTime == nil) ||
 		(previousCallTime != nil && req.CallTime != nil && *previousCallTime != *req.CallTime)
 	live := status == models.BookingStatusOffered || status == models.BookingStatusConfirmed
-	if callTimeChanged && live && previousCallTime != nil && req.CallTime != nil {
+	// Bug fix — the extra `previousCallTime != nil && req.CallTime != nil`
+	// guard here used to silently drop the two most common real cases: a
+	// call time being set for the first time (very common — Booking.call_time
+	// is routinely left unset at pencil/offer time, see the iCal feed's own
+	// nullable handling) or being cleared back to TBC. callTimeChanged above
+	// already correctly detects both as real changes ("if the call time
+	// actually changed... this fires", per this function's own doc comment);
+	// the guard only existed to protect the Sprintf below from a nil
+	// dereference, which the three-way switch now handles directly instead
+	// of narrowing which changes count as changes.
+	if callTimeChanged && live {
 		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 		if ctxErr == nil {
-			change := fmt.Sprintf("Call time moved from %s to %s", *previousCallTime, *req.CallTime)
+			var change string
+			switch {
+			case previousCallTime == nil:
+				change = fmt.Sprintf("Call time set to %s", *req.CallTime)
+			case req.CallTime == nil:
+				change = fmt.Sprintf("Call time removed (was %s)", *previousCallTime)
+			default:
+				change = fmt.Sprintf("Call time moved from %s to %s", *previousCallTime, *req.CallTime)
+			}
 			subject, body := notify.RenderBookingUpdated(ctx.JobName, change, crewCTAURL("/bookings/"+b.ID))
 			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingUpdated,
 				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "change": change, "booking_id": b.ID}, subject, body)
