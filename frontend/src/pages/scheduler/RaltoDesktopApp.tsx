@@ -5046,12 +5046,15 @@ function ArchiveContent({ summaries, clients, people, reloadSummaries }: { summa
       </label>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 640 }}>
-        {/* Deleted jobs aren't scoped by the crew-member filter above — it
-            reads per-person Completed history via a dedicated endpoint
-            (useCompletedJobsForPerson) that has no deleted-jobs equivalent,
-            so this list always shows regardless of that filter. */}
-        {!personFilter &&
-          deleted.map((s) => (
+        {/* Bug fix — this block was gated on !personFilter, which meant
+            picking a crew member made the entire deleted-jobs list vanish,
+            directly contradicting this comment's own stated intent (and the
+            reason it's a comment at all): deleted jobs aren't scoped by the
+            crew-member filter above — it reads per-person Completed history
+            via a dedicated endpoint (useCompletedJobsForPerson) that has no
+            deleted-jobs equivalent, so this list is meant to always show
+            regardless of that filter. Rendered unconditionally now. */}
+        {deleted.map((s) => (
             <ArchiveRow
               key={s.job.id}
               name={s.job.name}
