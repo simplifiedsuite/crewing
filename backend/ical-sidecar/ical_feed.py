@@ -284,8 +284,31 @@ def _run_to_vevent(booking: Booking, run: list[BookingShift]) -> str:
     # (matching LAST-MODIFIED) rather than a delete+recreate.
     uid = f"ralto-shift-{first.id}@ralto.app"
     dtstamp = _dtstamp_now()
-    dtstart = _dt_local(first.date, first.call_time)
-    dtend = _dt_local(last.date, last.end_time)
+    # Bug fix — "bookings default to a 04:00-12:00 window": not a timezone
+    # bug (TZID conversion here is RFC-correct throughout) and not a
+    # literal 04:00-12:00 hardcoded anywhere. defaultShiftTimes
+    # (booking_shifts.go) fills every booking_shifts row with a 9-to-5
+    # placeholder ("keeps booking_shifts usable purely for day-coverage
+    # tracking" — its own comment) whenever Booking.call_time was never
+    # set, which is the common case, not a rare one. This feed then
+    # rendered that placeholder as a real TZID'd 09:00-17:00
+    # Europe/London event — which a calendar app in e.g. US Eastern
+    # correctly converts to 04:00-12:00. Confirmed the exact arithmetic:
+    # 09:00/17:00 Europe/London is precisely 04:00/12:00 America/New_York.
+    # The conversion was never wrong; the input was never real. Since
+    # booking_shifts.call_time/end_time are NOT NULL, there's no way to
+    # tell a placeholder from a real 9am shift at that layer — but
+    # Booking.call_time (nullable) is exactly that signal, and
+    # syncBookingShifts applies the same placeholder to every shift row
+    # uniformly whenever it's nil, so checking it once here is sufficient.
+    # None means render what's actually real (which days — same as
+    # Holiday/TOIL's own all-day treatment), not a fabricated time.
+    if booking.call_time is None:
+        dtstart_line = f"DTSTART;VALUE=DATE:{_date_only(first.date)}"
+        dtend_line = f"DTEND;VALUE=DATE:{_date_only(last.date, plus_days=1)}"
+    else:
+        dtstart_line = f"DTSTART;TZID={first.timezone}:{_dt_local(first.date, first.call_time)}"
+        dtend_line = f"DTEND;TZID={first.timezone}:{_dt_local(last.date, last.end_time)}"
     summary, description, status = _booking_text(booking)
     location = _escape_text(first.venue)
     last_modified = (booking.last_modified or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
@@ -294,8 +317,8 @@ def _run_to_vevent(booking: Booking, run: list[BookingShift]) -> str:
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{dtstamp}",
-        f"DTSTART;TZID={first.timezone}:{dtstart}",
-        f"DTEND;TZID={first.timezone}:{dtend}",
+        dtstart_line,
+        dtend_line,
         f"SUMMARY:{summary}",
         f"LOCATION:{location}",
         f"DESCRIPTION:{description}",
@@ -321,13 +344,22 @@ def _booking_fallback_vevent(booking: Booking) -> Optional[str]:
         return None
     uid = f"ralto-booking-{booking.id}@ralto.app"
     dtstamp = _dtstamp_now()
-    call = (booking.call_time or "09:00").strip() or "09:00"
-    try:
-        end = (datetime.strptime(call, "%H:%M") + timedelta(hours=8)).strftime("%H:%M")
-    except ValueError:
-        call, end = "09:00", "17:00"
-    dtstart = _dt_local(booking.start_date, call)
-    dtend = _dt_local(booking.end_date, end)
+    # Bug fix — see _run_to_vevent's own comment for the full diagnosis.
+    # This path used to fabricate a call_time-plus-8-hours (or 09:00-17:00)
+    # window even though nothing in the data ever claimed that was the
+    # real call time. None means render the days that are actually real
+    # (Booking.start_date/end_date) as an all-day event instead.
+    if booking.call_time is None:
+        dtstart_line = f"DTSTART;VALUE=DATE:{_date_only(booking.start_date)}"
+        dtend_line = f"DTEND;VALUE=DATE:{_date_only(booking.end_date, plus_days=1)}"
+    else:
+        call = booking.call_time.strip() or "09:00"
+        try:
+            end = (datetime.strptime(call, "%H:%M") + timedelta(hours=8)).strftime("%H:%M")
+        except ValueError:
+            call, end = "09:00", "17:00"
+        dtstart_line = f"DTSTART;TZID={booking.timezone}:{_dt_local(booking.start_date, call)}"
+        dtend_line = f"DTEND;TZID={booking.timezone}:{_dt_local(booking.end_date, end)}"
     summary, description, status = _booking_text(booking)
     location = _escape_text(booking.venue or "Venue TBC")
     last_modified = (booking.last_modified or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
@@ -336,8 +368,8 @@ def _booking_fallback_vevent(booking: Booking) -> Optional[str]:
         "BEGIN:VEVENT",
         f"UID:{uid}",
         f"DTSTAMP:{dtstamp}",
-        f"DTSTART;TZID={booking.timezone}:{dtstart}",
-        f"DTEND;TZID={booking.timezone}:{dtend}",
+        dtstart_line,
+        dtend_line,
         f"SUMMARY:{summary}",
         f"LOCATION:{location}",
         f"DESCRIPTION:{description}",
@@ -600,9 +632,17 @@ if __name__ == "__main__":
             role="EVS Operator",
             status="confirmed",
             notes="Load-in via loading dock C. Ask for Dana on arrival for badge collection.",
+            # call_time set (a real one was entered at booking time) — see
+            # _run_to_vevent's own comment for why this is what gates
+            # timed-vs-all-day rendering, not the shift rows themselves
+            # (booking_shifts' NOT NULL columns can't tell a real time from
+            # defaultShiftTimes' placeholder on their own). The actual
+            # per-day times rendered still come from each shift's own
+            # call_time/end_time below (genuinely day-varying, exactly the
+            # case the schema addendum calls out BookingShift for) — this
+            # field is only the gate, not the rendered value.
+            call_time="14:00",
             shifts=[
-                # Day-varying call times within one multi-day booking — the
-                # exact case the schema addendum calls out BookingShift for.
                 BookingShift(id="sh-ufc327-1", date="2026-11-14", call_time="14:00", end_time="20:00", venue="T-Mobile Arena, Las Vegas"),
                 BookingShift(id="sh-ufc327-2", date="2026-11-15", call_time="10:00", end_time="18:00", venue="T-Mobile Arena, Las Vegas"),
                 BookingShift(id="sh-ufc327-3", date="2026-11-16", call_time="07:00", end_time="23:30", venue="T-Mobile Arena, Las Vegas"),
@@ -614,14 +654,19 @@ if __name__ == "__main__":
             client_name="Kingdom Sports Group",
             role="EVS Operator",
             status="offered",
+            call_time="09:00",  # real — matches the shift's own call_time
             shifts=[
                 BookingShift(id="sh-riyadh-1", date="2026-12-05", call_time="09:00", end_time="22:00", venue="Kingdom Arena, Riyadh", timezone="Asia/Riyadh"),
             ],
         ),
         # Regression case for the reported bug: 5 identical "All days"
         # 09:00-17:00 default shifts (see booking_shifts.go's
-        # defaultShiftTimes) on consecutive days — must collapse to ONE
-        # VEVENT spanning 10-14 Oct, not 5 separate daily events.
+        # defaultShiftTimes) on consecutive days, call_time deliberately
+        # left unset (None) — nobody ever entered a real call time for
+        # this booking, exactly the state that produced the reported
+        # "defaults to 04:00-12:00" bug. Must collapse to ONE all-day
+        # VEVENT spanning 10-14 Oct, not 5 separate daily timed events and
+        # not a fabricated 09:00-17:00 window.
         Booking(
             id="bk-sabeh-slavia",
             job_name="FC Sabeh v Slavia",
@@ -639,7 +684,9 @@ if __name__ == "__main__":
         # Genuinely non-uniform: covering day 1 and day 3 of a 3-day job,
         # not day 2 — must stay TWO separate VEVENTs, not collapse into one
         # block spanning day 1-3 (which would wrongly imply covering the
-        # gap day too).
+        # gap day too). Also call_time-unset/defaulted, like the case
+        # above — both must now render all-day, independently of the
+        # contiguous-grouping behaviour being tested here.
         Booking(
             id="bk-gap-job",
             job_name="MCWFC v Arsenal",
@@ -652,8 +699,10 @@ if __name__ == "__main__":
             ],
         ),
         # No BookingShift rows at all — a booking created before
-        # syncBookingShifts existed. Must render as ONE fallback VEVENT
-        # spanning the Booking's own start_date/end_date, not be dropped.
+        # syncBookingShifts existed — and no call_time either. Must render
+        # as ONE all-day fallback VEVENT spanning the Booking's own
+        # start_date/end_date, not be dropped, and not a fabricated
+        # call-time-plus-8-hours window.
         Booking(
             id="bk-legacy-no-shifts",
             job_name="UEL PFC Levski Sofia",
@@ -697,6 +746,30 @@ if __name__ == "__main__":
     print("  FC Sabeh v Slavia (5 uniform contiguous shifts) -> 1 VEVENT: OK")
     print("  MCWFC v Arsenal (day 1 + day 3, gap on day 2) -> 2 VEVENTs: OK")
     print("  UEL PFC Levski Sofia (0 shift rows) -> 1 fallback VEVENT: OK")
+
+    # Bug fix regression: a booking with no real call_time must render
+    # all-day (VALUE=DATE), never a fabricated TZID'd time — and must
+    # never produce the exact reported symptom (a 09:00 Europe/... or
+    # similar placeholder time that a calendar app converts to something
+    # like 04:00-12:00 in a different zone). A booking WITH a real
+    # call_time must still render as a proper TZID'd timed event, exactly
+    # as before this fix.
+    sabeh_block = feed.split("UID:ralto-shift-sh-sabeh-1")[1].split("END:VEVENT")[0]
+    assert "DTSTART;VALUE=DATE:20261010" in sabeh_block, "expected FC Sabeh v Slavia (no real call_time) to render all-day"
+    assert "DTEND;VALUE=DATE:20261015" in sabeh_block, "expected the all-day DTEND to be exclusive (last day + 1)"
+    assert "DTSTART;TZID" not in sabeh_block, "expected no fabricated TZID'd time for a booking with no real call_time"
+
+    gap_block_1 = feed.split("UID:ralto-shift-sh-gap-1")[1].split("END:VEVENT")[0]
+    assert "DTSTART;VALUE=DATE:20261003" in gap_block_1, "expected the gap booking's first run to render all-day too"
+
+    legacy_block = feed.split("UID:ralto-booking-bk-legacy-no-shifts")[1].split("END:VEVENT")[0]
+    assert "DTSTART;VALUE=DATE:20260915" in legacy_block, "expected the no-shifts fallback (no real call_time) to render all-day"
+    assert "DTEND;VALUE=DATE:20260919" in legacy_block, "expected the fallback's all-day DTEND to be exclusive"
+
+    ufc_block = feed.split("UID:ralto-shift-sh-ufc327-1")[1].split("END:VEVENT")[0]
+    assert "DTSTART;TZID=Europe/London:20261114T140000" in ufc_block, "expected a booking with a real call_time to still render as a proper timed event"
+    print("  No real call_time (FC Sabeh, gap booking, legacy fallback) -> all-day VEVENT, no fabricated time: OK")
+    print("  Real call_time (UFC 327) -> still a proper TZID'd timed VEVENT: OK")
 
     assert feed.count("SUMMARY:Holiday") == 1, "expected exactly one bare 'Holiday' SUMMARY on the per-person feed"
     assert feed.count("SUMMARY:TOIL") == 1, "expected exactly one bare 'TOIL' SUMMARY on the per-person feed"
