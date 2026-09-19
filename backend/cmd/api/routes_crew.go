@@ -30,6 +30,7 @@ func registerCrewRoutes(r chi.Router, api *handlers.API) {
 
 		r.Get("/availability-requests", api.ListMyAvailabilityRequests)
 		r.Post("/availability-requests/{id}/respond", api.RespondToAvailabilityRequest)
+		r.Get("/holiday-toil", api.ListMyHolidayToil)
 
 		r.Get("/documents", api.ListMyDocuments)
 

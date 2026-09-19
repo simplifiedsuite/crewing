@@ -13,6 +13,44 @@ import (
 	"ralto/internal/models"
 )
 
+// ListMyHolidayToil is the crew Calendar tab's data source for Holiday/TOIL
+// entries — same query the iCal feed's own per-person Holiday/TOIL block
+// already uses (backend/ical-sidecar/main.py), mirrored here rather than
+// invented fresh. Sick/Other/Bank Holiday and plain untyped Unavailable
+// stay excluded by the type filter, same as everywhere else this data is
+// shown. The employment_type = 'staff' join is a second, independent gate,
+// matching the iCal feed's own reasoning: CreateAvailability already
+// refuses to set annual_leave/toil on a freelancer, but this fails safe
+// (drops it) rather than relying on that invariant alone.
+func (a *API) ListMyHolidayToil(w http.ResponseWriter, r *http.Request) {
+	claims, _ := middleware.CrewFromContext(r.Context())
+	rows, err := a.DB.Query(r.Context(),
+		`SELECT a.id, a.person_id, a.start_date, a.end_date, a.status, a.type, a.day_portion, a.notes
+		 FROM availability a
+		 JOIN people p ON p.id = a.person_id
+		 WHERE a.person_id = $1 AND a.organisation_id = $2
+		       AND a.status = 'unavailable' AND a.type IN ('annual_leave', 'toil')
+		       AND p.employment_type = 'staff'
+		 ORDER BY a.start_date`,
+		claims.PersonID, currentOrgID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list holiday/TOIL entries")
+		return
+	}
+	defer rows.Close()
+
+	entries := []models.Availability{}
+	for rows.Next() {
+		var av models.Availability
+		if err := rows.Scan(&av.ID, &av.PersonID, &av.StartDate, &av.EndDate, &av.Status, &av.Type, &av.DayPortion, &av.Notes); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list holiday/TOIL entries")
+			return
+		}
+		entries = append(entries, av)
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
 func (a *API) ListMyAvailabilityRequests(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	rows, err := a.DB.Query(r.Context(),

@@ -3,7 +3,7 @@ import { Home as HomeIcon, Calendar as CalendarIcon, CalendarCheck, User, Chevro
 import { api, ApiError } from '../../lib/api'
 import { formatDate, formatDateRange, formatTime } from '../../lib/format'
 import { useCrewAuth } from '../../context/CrewAuthContext'
-import type { AvailabilityRequest, AvailabilityResponseValue, CrewBooking, JobContact, OperationalAlert, Person, PersonDocument } from '../../types'
+import type { Availability, AvailabilityRequest, AvailabilityResponseValue, CrewBooking, JobContact, OperationalAlert, Person, PersonDocument } from '../../types'
 
 // ---------------------------------------------------------------------------
 // Ralto crew app — converted from ralto-crew-mobile.jsx. Renders
@@ -36,6 +36,16 @@ const DEFAULT_CLIENT_COLOR = '#453E96'
 function clientStripeColor(colorHex: string | undefined): string {
   return colorHex || DEFAULT_CLIENT_COLOR
 }
+
+// Holiday/TOIL — same "Holiday"/"TOIL" labels and AM/PM-only note the iCal
+// feed already uses (backend/ical-sidecar/ical_feed.py's own
+// AVAILABILITY_TYPE_LABEL), reused rather than invented fresh so the
+// Calendar tab never disagrees with what a person's external calendar
+// already shows them. A fixed neutral grey, not any client colour, so a
+// day off is never mistaken for a booking at a glance — see the iCal
+// feed's own design note on keeping the two visually distinct.
+const HOLIDAY_TOIL_LABEL: Record<string, string> = { annual_leave: 'Holiday', toil: 'TOIL' }
+const HOLIDAY_TOIL_COLOR = 'var(--ink-muted)'
 
 const statusStyle: Record<string, { color: string; bg: string; label: string; Icon: typeof CheckCircle2 }> = {
   confirmed: { color: 'var(--success)', bg: 'var(--success-bg)', label: 'Confirmed', Icon: CheckCircle2 },
@@ -379,7 +389,8 @@ function getMonthWeeks(refDate: Date): Date[][] {
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
 const MONTH_LABELS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 
-function CalendarDayCell({ date, inMonth, isToday, isSelected, bookings, onSelect }: { date: Date; inMonth: boolean; isToday: boolean; isSelected: boolean; bookings: CrewBooking[]; onSelect: (d: Date) => void }) {
+function CalendarDayCell({ date, inMonth, isToday, isSelected, bookings, holidayToil, onSelect }: { date: Date; inMonth: boolean; isToday: boolean; isSelected: boolean; bookings: CrewBooking[]; holidayToil: Availability[]; onSelect: (d: Date) => void }) {
+  const dots = [...bookings.map((b) => ({ key: b.id, color: clientStripeColor(b.client_color_hex) })), ...holidayToil.map((a) => ({ key: a.id, color: HOLIDAY_TOIL_COLOR }))]
   return (
     <button onClick={() => onSelect(date)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 0 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: inMonth ? 1 : 0.35 }}>
       <span
@@ -400,8 +411,8 @@ function CalendarDayCell({ date, inMonth, isToday, isSelected, bookings, onSelec
         {date.getDate()}
       </span>
       <div style={{ display: 'flex', gap: 2, height: 5 }}>
-        {bookings.slice(0, 3).map((b) => (
-          <span key={b.id} style={{ width: 5, height: 5, borderRadius: '50%', background: clientStripeColor(b.client_color_hex) }} />
+        {dots.slice(0, 3).map((d) => (
+          <span key={d.key} style={{ width: 5, height: 5, borderRadius: '50%', background: d.color }} />
         ))}
       </div>
     </button>
@@ -433,13 +444,36 @@ function CalendarAgendaCard({ booking, onOpen }: { booking: CrewBooking; onOpen:
   )
 }
 
+// HolidayAgendaCard — a plain div, not a button: there's no job behind a
+// Holiday/TOIL entry to open, so unlike CalendarAgendaCard this deliberately
+// isn't clickable at all (no cursor:pointer, no onClick) rather than being
+// tappable into a dead end.
+function HolidayAgendaCard({ entry }: { entry: Availability }) {
+  const label = entry.type ? HOLIDAY_TOIL_LABEL[entry.type] : undefined
+  if (!label) return null
+  return (
+    <div style={{ position: 'relative', background: '#fff', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 14px 12px 18px', marginBottom: 10, overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: HOLIDAY_TOIL_COLOR }} />
+      <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{label}</div>
+      {entry.day_portion !== 'full' && (
+        <div style={{ fontFamily: 'var(--font-body)', fontSize: 12.5, color: 'var(--ink-muted)', marginTop: 2 }}>{entry.day_portion === 'am' ? 'AM only' : 'PM only'}</div>
+      )}
+    </div>
+  )
+}
+
 // CalendarScreen — browsing only, same as the scheduler's own Calendar (no
 // accept/decline here; that stays on Home/Availability). bookings is the
 // same list the root component already fetches from GET /crew/bookings,
 // which already excludes declined/cancelled and already gates Pencilled to
 // staff-only (see ListMyBookings) — nothing extra to filter here, and
 // nothing new for a freelancer to see just because this is a new screen.
-function CalendarScreen({ bookings, onOpenJob }: { bookings: CrewBooking[]; onOpenJob: (b: CrewBooking) => void }) {
+// holidayToil is GET /crew/holiday-toil — already Holiday/TOIL-only and
+// staff-only server-side (mirrors the iCal feed's own query), so a
+// freelancer's list here is simply always empty, same as everywhere else
+// this data shows up. Home screen intentionally doesn't take this prop at
+// all — Holiday/TOIL stays Calendar-tab-only, per this feature's own scope.
+function CalendarScreen({ bookings, holidayToil, onOpenJob }: { bookings: CrewBooking[]; holidayToil: Availability[]; onOpenJob: (b: CrewBooking) => void }) {
   const [mode, setMode] = useState<'month' | 'week'>('month')
   const today = useMemo(() => new Date(), [])
   const [refDate, setRefDate] = useState(today)
@@ -448,6 +482,11 @@ function CalendarScreen({ bookings, onOpenJob }: { bookings: CrewBooking[]; onOp
   function bookingsOnDate(date: Date): CrewBooking[] {
     const iso = toISODate(date)
     return bookings.filter((b) => b.start_date <= iso && iso <= b.end_date)
+  }
+
+  function holidayToilOnDate(date: Date): Availability[] {
+    const iso = toISODate(date)
+    return holidayToil.filter((a) => a.start_date <= iso && iso <= a.end_date)
   }
 
   const weeks = mode === 'month' ? getMonthWeeks(refDate) : [Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(refDate), i))]
@@ -465,6 +504,7 @@ function CalendarScreen({ bookings, onOpenJob }: { bookings: CrewBooking[]; onOp
         })()
 
   const agenda = bookingsOnDate(selectedDate)
+  const holidayAgenda = holidayToilOnDate(selectedDate)
 
   return (
     <div>
@@ -514,6 +554,7 @@ function CalendarScreen({ bookings, onOpenJob }: { bookings: CrewBooking[]; onOp
                 isToday={sameDay(date, today)}
                 isSelected={sameDay(date, selectedDate)}
                 bookings={bookingsOnDate(date)}
+                holidayToil={holidayToilOnDate(date)}
                 onSelect={setSelectedDate}
               />
             ))}
@@ -525,8 +566,11 @@ function CalendarScreen({ bookings, onOpenJob }: { bookings: CrewBooking[]; onOp
         {selectedDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
       </div>
       <div style={{ padding: '0 20px' }}>
-        {agenda.length > 0 ? (
-          agenda.map((booking) => <CalendarAgendaCard key={booking.id} booking={booking} onOpen={onOpenJob} />)
+        {agenda.length > 0 || holidayAgenda.length > 0 ? (
+          <>
+            {holidayAgenda.map((entry) => <HolidayAgendaCard key={entry.id} entry={entry} />)}
+            {agenda.map((booking) => <CalendarAgendaCard key={booking.id} booking={booking} onOpen={onOpenJob} />)}
+          </>
         ) : (
           <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', padding: '8px 0 20px' }}>Nothing on the schedule this day.</div>
         )}
@@ -954,10 +998,14 @@ export function RaltoCrewApp() {
   const [openJob, setOpenJob] = useState<CrewBooking | null>(null)
   const [bookings, setBookings] = useState<CrewBooking[]>([])
   const [alerts, setAlerts] = useState<OperationalAlert[]>([])
+  // Calendar-tab-only, per this feature's own scope — HomeScreen below
+  // doesn't take this prop at all, so there's no way for it to leak in.
+  const [holidayToil, setHolidayToil] = useState<Availability[]>([])
 
   function reload() {
     api.get<CrewBooking[]>('/crew/bookings').then(setBookings)
     api.get<OperationalAlert[]>('/crew/alerts').then(setAlerts)
+    api.get<Availability[]>('/crew/holiday-toil').then(setHolidayToil)
   }
 
   useEffect(reload, [])
@@ -981,7 +1029,7 @@ export function RaltoCrewApp() {
   } else if (tab === 'home') {
     body = <HomeScreen bookings={bookings} alerts={alerts} onRespond={handleRespond} onAcknowledge={handleAcknowledge} onOpenJob={setOpenJob} />
   } else if (tab === 'calendar') {
-    body = <CalendarScreen bookings={bookings} onOpenJob={setOpenJob} />
+    body = <CalendarScreen bookings={bookings} holidayToil={holidayToil} onOpenJob={setOpenJob} />
   } else if (tab === 'availability') {
     body = <AvailabilityScreen />
   } else {
