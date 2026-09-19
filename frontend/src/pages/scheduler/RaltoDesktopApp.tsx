@@ -37,6 +37,7 @@ import {
   CalendarCheck2,
 } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
+import { formatDate } from '../../lib/format'
 import { useStaffAuth } from '../../context/StaffAuthContext'
 import {
   useAlerts,
@@ -219,18 +220,6 @@ const FALLBACK_CLIENT_COLORS = ['#453E96', '#F4511E', '#1B3A8C', '#006C35', '#E1
 function clientColor(client: Client | undefined, fallbackIndex: number): string {
   if (client?.brand_color_hex) return client.brand_color_hex
   return FALLBACK_CLIENT_COLORS[fallbackIndex % FALLBACK_CLIENT_COLORS.length]
-}
-
-// Every date field from the API comes back as a plain "YYYY-MM-DD" string —
-// this is the one place that gets turned into the requested DD/MM/YY
-// display format, so every call site stays consistent by construction
-// rather than by remembering to match the others.
-// Exported — RaltoMobileApp's own JobChip reuses this rather than a second
-// DD/MM/YY implementation drifting out of sync with this one (same reason
-// it already imports SettingsContent from here instead of duplicating it).
-export function formatDate(iso: string): string {
-  const [y, m, d] = iso.split('-')
-  return `${d}/${m}/${y.slice(2)}`
 }
 
 // The four-tag vocabulary from addendum v2 §4, expanded per testing

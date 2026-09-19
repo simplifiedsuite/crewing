@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Home as HomeIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight, Link as LinkIcon, Copy, RefreshCw, Car } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
-import { formatTime } from '../../lib/format'
+import { formatDate, formatDateRange, formatTime } from '../../lib/format'
 import { useCrewAuth } from '../../context/CrewAuthContext'
 import type { AvailabilityRequest, AvailabilityResponseValue, CrewBooking, JobContact, OperationalAlert, Person, PersonDocument } from '../../types'
 
@@ -109,7 +109,7 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
               <div>
                 <div style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-muted)' }}>Call time</div>
                 <div style={{ fontFamily: 'var(--font-body)', fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontSize: 17, color: 'var(--ink)' }}>
-                  {nextJob.start_date}
+                  {formatDate(nextJob.start_date)}
                   {nextJob.call_time ? ` · ${formatTime(nextJob.call_time)}` : ''}
                 </div>
               </div>
@@ -146,7 +146,7 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
                   <div style={{ flex: 1 }}>
                     <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{offer.job_name}</div>
                     <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 2 }}>
-                      {offer.role_name} · {offer.start_date} – {offer.end_date}
+                      {offer.role_name} · {formatDateRange(offer.start_date, offer.end_date)}
                     </div>
                     <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>{offer.venue_name ?? 'Venue TBC'}</div>
                   </div>
@@ -208,7 +208,7 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
               <div>
                 <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{job.job_name}</div>
                 <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>
-                  {job.start_date} – {job.end_date}
+                  {formatDateRange(job.start_date, job.end_date)}
                 </div>
               </div>
               <div style={{ flexShrink: 0, width: 24, height: 24, borderRadius: '50%', background: s.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -256,7 +256,7 @@ function JobDetailScreen({ job, onBack }: { job: CrewBooking; onBack: () => void
       </div>
 
       <Divider />
-      <Row icon={CalendarDays} label="Call" value={`${job.start_date}${job.call_time ? ' · ' + formatTime(job.call_time) : ''}`} />
+      <Row icon={CalendarDays} label="Call" value={`${formatDate(job.start_date)}${job.call_time ? ' · ' + formatTime(job.call_time) : ''}`} />
       <Divider />
       <Row icon={MapPin} label="Venue" value={job.venue_name ?? 'Not yet set'} />
       <Divider />
@@ -306,7 +306,7 @@ function AvailabilityScreen() {
       {pending.map((req) => (
         <div key={req.id} style={{ marginTop: 20, border: '1px solid var(--line)', borderRadius: 12, padding: 18, background: '#fff' }}>
           <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 18, color: 'var(--ink)' }}>
-            {req.start_date} – {req.end_date}
+            {formatDateRange(req.start_date, req.end_date)}
           </div>
           {req.message && <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 4 }}>{req.message}</div>}
           <div style={{ fontFamily: 'var(--font-body)', fontSize: 14, color: 'var(--ink-muted)', marginTop: 6 }}>Are you available?</div>
@@ -658,7 +658,7 @@ function ProfileScreen() {
         {documents.length === 0 && <div style={{ padding: 16, fontFamily: 'var(--font-body)', fontSize: 13.5, color: 'var(--ink-muted)' }}>No documents on file.</div>}
         {documents.map((doc, i) => (
           <div key={doc.id}>
-            <Row icon={FileText} label={DOCUMENT_TYPE_LABEL[doc.type]} value={doc.expiry_date ? `Valid to ${doc.expiry_date}` : 'No expiry set'} />
+            <Row icon={FileText} label={DOCUMENT_TYPE_LABEL[doc.type]} value={doc.expiry_date ? `Valid to ${formatDate(doc.expiry_date)}` : 'No expiry set'} />
             {i < documents.length - 1 && <Divider />}
           </div>
         ))}

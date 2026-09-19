@@ -27,6 +27,7 @@ import {
   Settings,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { formatDate } from '../../lib/format'
 import { useStaffAuth } from '../../context/StaffAuthContext'
 import {
   useAlerts,
@@ -49,7 +50,7 @@ import type { Booking, Client, JobContact, JobRequirementWithCounts, Operational
 // it here — mobile had no way to reach Settings at all (see the "Settings"
 // button next to Sign out below), and the fix should surface the same
 // content, not a cut-down mobile version of it.
-import { SettingsContent, formatDate } from './RaltoDesktopApp'
+import { SettingsContent } from './RaltoDesktopApp'
 
 // ---------------------------------------------------------------------------
 // Ralto scheduler mobile app — merges what were ralto-today-mobile.jsx,
