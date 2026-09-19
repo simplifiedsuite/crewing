@@ -239,12 +239,23 @@ func (a *API) ListCandidatesForJobRequirement(w http.ResponseWriter, r *http.Req
 		         JOIN jobs j ON j.id = jr2.job_id
 		         WHERE b.person_id = p.id AND b.status IN ('offered', 'confirmed') AND b.organisation_id = $4
 		           AND b.start_date <= $3 AND b.end_date >= $2
+		           -- Bug fix: a booking on the job currently being crewed is
+		           -- never a conflict, no matter which of its roles it's
+		           -- against — that's what "Currently Booked" already shows.
+		           -- Without this, Chris Taylor (confirmed as Tech Producer on
+		           -- MCWFC v Liverpool) showed under both Currently Booked AND
+		           -- Conflict while crewing any other role on that same job,
+		           -- flagged as "Already booked on MCWFC v Liverpool" — the
+		           -- job actually open. Excluding jr2.job_id = $5 here scopes
+		           -- the fix to "same job," not "weaker overlap check" — a
+		           -- genuinely different, time-overlapping job still conflicts.
+		           AND jr2.job_id != $5
 		         ORDER BY b.start_date
 		         LIMIT 1
 		       ) conflict ON true
 		WHERE pr.role_id = $1 AND p.status = 'active' AND p.organisation_id = $4
 		ORDER BY p.preferred_status, name`,
-		roleID, startDate, endDate, currentOrgID,
+		roleID, startDate, endDate, currentOrgID, jobID,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to find candidates")
