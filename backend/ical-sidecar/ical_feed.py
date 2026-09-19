@@ -98,6 +98,32 @@ class Person:
 
 
 @dataclass
+class AvailabilityBlock:
+    """A Holiday or TOIL Availability entry — the only two Availability.type
+    values either feed renders (see AVAILABILITY_ICS_LABEL below). Everything
+    else (Sick, Other, Bank Holiday, and untyped/generic Unavailable — the
+    common freelancer "blocked out" entry) stays excluded from both feeds,
+    same as before this feature: the concern that originally kept Availability
+    out of the feed entirely was freelancer noise from blanket unavailability,
+    and that concern doesn't apply to a specifically-typed Holiday/TOIL entry
+    regardless of whether the person happens to be staff or a freelancer —
+    confirmed directly against production data that nothing in the backend or
+    frontend actually restricts these two types to staff (CreateAvailability
+    has no employment_type check, and AddAvailabilityForm's Reason dropdown
+    offers them to every person), so the type filter alone is the correct and
+    sufficient gate, not an additional person-type guard.
+    person_name is only used by the Dakboard rendering path (per-person feed
+    already knows whose calendar it is; the shared Dakboard feed doesn't)."""
+
+    id: str
+    start_date: str
+    end_date: str
+    type: str  # "annual_leave" | "toil"
+    day_portion: str = "full"  # "full" | "am" | "pm" — see migrations/0019
+    person_name: Optional[str] = None
+
+
+@dataclass
 class JobSummary:
     """One row of the org-wide Dakboard feed — a Job, its Confirmed crew,
     and enough context for a wall display, not a full Job record."""
@@ -118,6 +144,16 @@ ICS_STATUS = {
     "confirmed": "CONFIRMED",
     "offered": "TENTATIVE",
     "pencilled": "TENTATIVE",
+}
+
+# The only two Availability.type values either feed renders — see
+# AvailabilityBlock's own docstring for why Sick/Other/Bank Holiday/untyped
+# stay excluded. Deliberately short, unambiguous labels ("Holiday"/"TOIL")
+# rather than the raw enum value, so a glance at a calendar can't mistake
+# one of these for a job name.
+AVAILABILITY_ICS_LABEL = {
+    "annual_leave": "Holiday",
+    "toil": "TOIL",
 }
 
 
@@ -321,21 +357,72 @@ def _booking_to_vevents(booking: Booking) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Holiday/TOIL VEVENT generation — shared by both feeds (per-person and
+# Dakboard), since the rendering only differs in whether the person's name
+# needs to be spelled out in SUMMARY. All-day: Availability records carry no
+# time-of-day at all (no call_time-equivalent column — see the model), just
+# a date range plus the AM/PM-only DayPortion flag from testing feedback S,
+# which is noted in DESCRIPTION rather than folded into SUMMARY so the title
+# itself stays exactly "Holiday" / "TOIL", per the brief's own instruction
+# not to leave these ambiguous with a job name.
+# ---------------------------------------------------------------------------
+
+
+def _availability_to_vevent(av: AvailabilityBlock, *, include_person_name: bool) -> Optional[str]:
+    label = AVAILABILITY_ICS_LABEL.get(av.type)
+    if label is None:
+        return None  # defensive — callers are expected to have already filtered to Holiday/TOIL only
+
+    uid_prefix = "ralto-dakboard-availability" if include_person_name else "ralto-availability"
+    uid = f"{uid_prefix}-{av.id}@ralto.app"
+    dtstamp = _dtstamp_now()
+    dtstart = _date_only(av.start_date)
+    dtend = _date_only(av.end_date, plus_days=1)  # DTEND is exclusive for all-day events
+
+    summary_text = f"{label} — {av.person_name}" if include_person_name and av.person_name else label
+    summary = _escape_text(summary_text)
+
+    lines = [
+        "BEGIN:VEVENT",
+        f"UID:{uid}",
+        f"DTSTAMP:{dtstamp}",
+        f"DTSTART;VALUE=DATE:{dtstart}",
+        f"DTEND;VALUE=DATE:{dtend}",
+        f"SUMMARY:{summary}",
+        "STATUS:CONFIRMED",  # a recorded Holiday/TOIL entry, not a pencilled/offered booking — see module docstring
+    ]
+    if av.day_portion in ("am", "pm"):
+        lines.append(f"DESCRIPTION:{_escape_text(av.day_portion.upper() + ' only')}")
+    lines.append("END:VEVENT")
+    return "\r\n".join(_fold_line(l) for l in lines)
+
+
+# ---------------------------------------------------------------------------
 # Full feed generation
 # ---------------------------------------------------------------------------
 
 
-def generate_ics_feed(person: Person, bookings: list[Booking]) -> str:
-    """Generate a complete .ics feed for one person's bookings.
+def generate_ics_feed(person: Person, bookings: list[Booking], availability: Optional[list[AvailabilityBlock]] = None) -> str:
+    """Generate a complete .ics feed for one person's bookings, plus their
+    Holiday/TOIL Availability entries (see AvailabilityBlock).
 
     Confirmed and offered (tentative) bookings are both included — see the
     module docstring for why. Cancelled/declined bookings are assumed to
     already be filtered out by the caller before this function is reached;
     this function has no opinion on booking lifecycle, only on rendering.
+    Same division of responsibility for availability: the caller is
+    expected to have already scoped it to type IN ('annual_leave', 'toil')
+    for this person within the feed's date window — this function renders
+    whatever it's handed (_availability_to_vevent skips anything else
+    defensively, but shouldn't need to in practice).
     """
     vevents = []
     for booking in bookings:
         vevents.extend(_booking_to_vevents(booking))
+    for av in availability or []:
+        vevent = _availability_to_vevent(av, include_person_name=False)
+        if vevent:
+            vevents.append(vevent)
 
     header = [
         "BEGIN:VCALENDAR",
@@ -391,14 +478,22 @@ def _job_to_vevent(job: JobSummary) -> str:
     return "\r\n".join(_fold_line(l) for l in lines)
 
 
-def generate_dakboard_ics_feed(jobs: list[JobSummary]) -> str:
+def generate_dakboard_ics_feed(jobs: list[JobSummary], availability: Optional[list[AvailabilityBlock]] = None) -> str:
     """Generate the org-wide Dakboard feed: one event per Booked/firm-
     commitment, non-cancelled Job, description listing only its Confirmed
-    crew. Filtering (commitment/status/booking-status) is the caller's
-    job, same division of responsibility as generate_ics_feed above — this
-    function only renders what it's handed.
+    crew — plus one event per Holiday/TOIL Availability entry org-wide,
+    each attributed to the person it belongs to (see AvailabilityBlock —
+    unlike the per-person feed, whose calendar it is isn't already implicit
+    here, so include_person_name=True). Filtering (commitment/status/
+    booking-status/availability type) is the caller's job, same division of
+    responsibility as generate_ics_feed above — this function only renders
+    what it's handed.
     """
     vevents = [_job_to_vevent(job) for job in jobs]
+    for av in availability or []:
+        vevent = _availability_to_vevent(av, include_person_name=True)
+        if vevent:
+            vevents.append(vevent)
 
     header = [
         "BEGIN:VCALENDAR",
@@ -571,7 +666,18 @@ if __name__ == "__main__":
         ),
     ]
 
-    feed = generate_ics_feed(person, bookings)
+    # Holiday/TOIL feature — one of each type, plus one AM-only TOIL entry
+    # to exercise the DESCRIPTION day-portion note. Sick/Other/Bank Holiday
+    # aren't modelled here at all since the caller (main.py) is responsible
+    # for never handing this function anything but annual_leave/toil in the
+    # first place — validated separately below via the defensive None
+    # return in _availability_to_vevent.
+    availability = [
+        AvailabilityBlock(id="av-holiday-1", start_date="2026-12-24", end_date="2026-12-31", type="annual_leave"),
+        AvailabilityBlock(id="av-toil-1", start_date="2026-11-03", end_date="2026-11-03", type="toil", day_portion="am"),
+    ]
+
+    feed = generate_ics_feed(person, bookings, availability)
 
     problems = validate_ics(feed)
     print("=== Validation ===")
@@ -591,6 +697,21 @@ if __name__ == "__main__":
     print("  FC Sabeh v Slavia (5 uniform contiguous shifts) -> 1 VEVENT: OK")
     print("  MCWFC v Arsenal (day 1 + day 3, gap on day 2) -> 2 VEVENTs: OK")
     print("  UEL PFC Levski Sofia (0 shift rows) -> 1 fallback VEVENT: OK")
+
+    assert feed.count("SUMMARY:Holiday") == 1, "expected exactly one bare 'Holiday' SUMMARY on the per-person feed"
+    assert feed.count("SUMMARY:TOIL") == 1, "expected exactly one bare 'TOIL' SUMMARY on the per-person feed"
+    assert "DESCRIPTION:AM only" in feed, "expected the AM-only TOIL entry's day-portion note"
+    assert _availability_to_vevent(AvailabilityBlock(id="x", start_date="2026-01-01", end_date="2026-01-01", type="sick"), include_person_name=False) is None
+    print("  Holiday -> 1 bare-titled all-day VEVENT: OK")
+    print("  TOIL (AM only) -> 1 VEVENT with day-portion DESCRIPTION: OK")
+    print("  Sick type -> no VEVENT (defensive filter): OK")
+
+    dakboard_feed = generate_dakboard_ics_feed(
+        [],
+        [AvailabilityBlock(id="av-holiday-1", start_date="2026-12-24", end_date="2026-12-31", type="annual_leave", person_name="Sam Ortiz")],
+    )
+    assert "SUMMARY:Holiday — Sam Ortiz" in dakboard_feed, "expected the Dakboard feed to attribute the Holiday event to the person"
+    print("  Dakboard Holiday event attributed to person name: OK")
 
     print("\n=== Feed preview ===")
     print(feed)

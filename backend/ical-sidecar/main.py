@@ -25,7 +25,7 @@ import psycopg2.extras
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 
-from ical_feed import Booking, BookingShift, JobSummary, Person, generate_dakboard_ics_feed, generate_ics_feed
+from ical_feed import AvailabilityBlock, Booking, BookingShift, JobSummary, Person, generate_dakboard_ics_feed, generate_ics_feed
 
 app = FastAPI()
 
@@ -128,10 +128,37 @@ def feed(token: str):
                         timezone=row["timezone"],
                     )
                 )
+
+            # Holiday/TOIL only — see ical_feed.AvailabilityBlock's own
+            # docstring for why the type filter alone (no employment_type
+            # guard) is the right scope: Sick/Other/Bank Holiday and plain
+            # blanket Unavailable (the common freelancer entry, always
+            # type IS NULL) stay excluded, same as before this feature.
+            # status = 'unavailable' is redundant with the type filter in
+            # practice (CreateAvailability nulls type on any other status)
+            # but kept explicit rather than relying on that invariant.
+            cur.execute(
+                """
+                SELECT id, start_date, end_date, type, day_portion
+                FROM availability
+                WHERE person_id = %s AND status = 'unavailable' AND type IN ('annual_leave', 'toil')
+                """,
+                (person_row["id"],),
+            )
+            availability = [
+                AvailabilityBlock(
+                    id=str(a["id"]),
+                    start_date=str(a["start_date"]),
+                    end_date=str(a["end_date"]),
+                    type=a["type"],
+                    day_portion=a["day_portion"],
+                )
+                for a in cur.fetchall()
+            ]
     finally:
         conn.close()
 
-    ics = generate_ics_feed(person, bookings)
+    ics = generate_ics_feed(person, bookings, availability)
     return PlainTextResponse(
         content=ics,
         media_type="text/calendar; charset=utf-8",
@@ -204,10 +231,37 @@ def dakboard_feed(token: str):
                         crew=[f'{c["name"]} ({c["role"]})' for c in crew_rows],
                     )
                 )
+
+            # Holiday/TOIL, org-wide — same type scope as the per-person
+            # feed (see AvailabilityBlock's docstring), attributed to each
+            # person by name since this feed isn't implicitly "whose
+            # calendar" the way the per-person one is.
+            cur.execute(
+                """
+                SELECT a.id, a.start_date, a.end_date, a.type, a.day_portion,
+                       p.first_name || ' ' || p.last_name AS person_name
+                FROM availability a
+                JOIN people p ON p.id = a.person_id
+                WHERE a.organisation_id = %s AND a.status = 'unavailable' AND a.type IN ('annual_leave', 'toil')
+                ORDER BY a.start_date
+                """,
+                (organisation_id,),
+            )
+            availability = [
+                AvailabilityBlock(
+                    id=str(a["id"]),
+                    start_date=str(a["start_date"]),
+                    end_date=str(a["end_date"]),
+                    type=a["type"],
+                    day_portion=a["day_portion"],
+                    person_name=a["person_name"],
+                )
+                for a in cur.fetchall()
+            ]
     finally:
         conn.close()
 
-    ics = generate_dakboard_ics_feed(jobs)
+    ics = generate_dakboard_ics_feed(jobs, availability)
     return PlainTextResponse(
         content=ics,
         media_type="text/calendar; charset=utf-8",
