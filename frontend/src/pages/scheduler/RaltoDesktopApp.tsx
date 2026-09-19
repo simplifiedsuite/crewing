@@ -4957,6 +4957,7 @@ function ArchiveRow({
   badge,
   meta,
   action,
+  onOpen,
 }: {
   name: string
   clientName: string
@@ -4965,9 +4966,18 @@ function ArchiveRow({
   badge?: React.ReactNode
   meta?: string
   action?: React.ReactNode
+  // onOpen — parity with every other job list (Today, Calendar, Jobs,
+  // Planner), which already open the same detail view on click. Archive's
+  // own read-only ArchivedJobDetail modal, not JobsContent's onOpenJob:
+  // see that component's comment for why a completed/deleted job can't
+  // reuse JobsContent's activeSummaries-based selection.
+  onOpen: () => void
 }) {
   return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 10, background: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+    <div
+      onClick={onOpen}
+      style={{ border: '1px solid var(--line)', borderRadius: 10, background: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+    >
       <div style={{ minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{name}</div>
@@ -4980,7 +4990,10 @@ function ArchiveRow({
         <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)', whiteSpace: 'nowrap' }}>
           {formatDate(startDate)} – {formatDate(endDate)}
         </div>
-        {action}
+        {/* stopPropagation — action (Restore) is an independent control
+            nested inside the now-clickable row; without this, clicking it
+            would also fire onOpen and pop the detail modal open behind it. */}
+        {action && <div onClick={(e) => e.stopPropagation()}>{action}</div>}
       </div>
     </div>
   )
@@ -4994,9 +5007,145 @@ function DeletedBadge() {
   )
 }
 
+// Read-only crew list for one role, for ArchivedJobDetail. Deliberately not
+// JobRoleRow/BookedPersonRow — those carry Confirm/Cancel/delete-slot
+// actions that don't apply to an archived job (nothing about it is meant to
+// be editable), so this just borrows their per-booking status icon
+// (BOOKING_STATUS_ICON) and layout, minus every control.
+function ArchivedRoleRow({ req, bookings }: { req: JobRequirementWithCounts; bookings: Booking[] }) {
+  return (
+    <div style={{ border: '1px solid var(--line)', borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{req.role_name}</span>
+        <span style={{ fontFamily: 'var(--font)', fontVariantNumeric: 'tabular-nums', fontSize: 12.5, fontWeight: 600, color: 'var(--ink-muted)' }}>
+          {req.quantity_confirmed}/{req.quantity_required}
+        </span>
+      </div>
+      {bookings.length > 0 ? (
+        <div style={{ borderTop: '1px solid var(--line)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {bookings.map((b) => {
+            const meta = BOOKING_STATUS_ICON[b.status] ?? BOOKING_STATUS_ICON.offered!
+            const Icon = meta.Icon
+            return (
+              <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Icon size={13} color={meta.color} strokeWidth={2.5} />
+                <span style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}>
+                  {b.first_name} {b.last_name}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)' }}>Nobody was booked into this role.</div>
+      )}
+    </div>
+  )
+}
+
+// Read-only detail view opened from an ArchiveRow click. Not JobsContent's
+// panel — that's built around an editable, still-active Job (Confirm
+// everyone, add/delete roles, status actions) and its `selected` lookup
+// explicitly excludes complete/deleted jobs (see JobsContent's own
+// activeSummaries comment), so a completed/deleted job has no safe way into
+// that view. This is a lightweight modal instead: name/client/dates,
+// completion or deletion metadata, and the final crew list, nothing editable.
+//
+// `requirements` is omitted for the one case where the caller only has a
+// CompletedJobSummary (the per-person crew-history filter's dedicated
+// endpoint, which never returns role/booking data) and couldn't find the
+// matching full JobSummary already loaded at the app root — the crew
+// section then says so rather than silently showing nothing.
+function ArchivedJobDetail({
+  name,
+  clientName,
+  startDate,
+  endDate,
+  badge,
+  meta,
+  requirements,
+  onClose,
+}: {
+  name: string
+  clientName: string
+  startDate: string
+  endDate: string
+  badge: React.ReactNode
+  meta?: string
+  requirements?: JobRequirementWithCounts[]
+  onClose: () => void
+}) {
+  const [bookingsByReq, setBookingsByReq] = useState<Record<string, Booking[]>>({})
+  const [loading, setLoading] = useState(!!requirements && requirements.length > 0)
+
+  useEffect(() => {
+    if (!requirements || requirements.length === 0) {
+      setBookingsByReq({})
+      setLoading(false)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    Promise.all(requirements.map(async (r) => [r.id, await listBookingsForRequirement(r.id)] as const))
+      .then((entries) => {
+        if (!cancelled) setBookingsByReq(Object.fromEntries(entries))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [requirements])
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }} onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: '#fff', borderRadius: 14, padding: 24, width: 520, maxWidth: '90vw', maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 20px 50px rgba(0,0,0,0.25)' }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 17, color: 'var(--ink)' }}>{name}</div>
+              {badge}
+            </div>
+            <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 2 }}>{clientName}</div>
+          </div>
+          <button onClick={onClose} title="Close" style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--ink-muted)', padding: 2, flexShrink: 0 }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)', marginTop: 12 }}>
+          {formatDate(startDate)} – {formatDate(endDate)}
+        </div>
+        {meta && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 4 }}>{meta}</div>}
+
+        <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 13, color: 'var(--ink)', marginTop: 22, marginBottom: 10 }}>Final crew</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {requirements === undefined && (
+            <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>Crew details aren't available for this job.</div>
+          )}
+          {requirements && loading && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>Loading…</div>}
+          {requirements && !loading && requirements.length === 0 && (
+            <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No roles were added to this job.</div>
+          )}
+          {requirements && !loading && requirements.map((req) => <ArchivedRoleRow key={req.id} req={req} bookings={bookingsByReq[req.id] ?? []} />)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ArchiveContent({ summaries, clients, people, reloadSummaries }: { summaries: JobSummary[]; clients: Record<string, Client>; people: Person[]; reloadSummaries: () => void }) {
   const [personFilter, setPersonFilter] = useState('')
   const [restoringId, setRestoringId] = useState<string | undefined>(undefined)
+  // openJobId — testing feedback: Archive rows didn't open anything, unlike
+  // every other job list in the app. Its own local piece of state, not
+  // JobsContent's selectedId/onSelect: that path resolves against
+  // activeSummaries, which excludes exactly the jobs this tab shows.
+  const [openJobId, setOpenJobId] = useState<string | undefined>(undefined)
   const completed = useMemo(() => summaries.filter((s) => s.job.status === 'complete' && !s.job.deleted_at), [summaries])
   // Deleted — testing feedback "Delete cancelled jobs into an archive".
   // Listed above Completed (most likely to need a quick Restore) and kept
@@ -5004,6 +5153,14 @@ function ArchiveContent({ summaries, clients, people, reloadSummaries }: { summa
   // completed list.
   const deleted = useMemo(() => summaries.filter((s) => s.job.deleted_at), [summaries])
   const { data: personCompleted, loading: personLoading } = useCompletedJobsForPerson(personFilter || undefined)
+
+  // The crew-history filter's rows come from a dedicated endpoint
+  // (CompletedJobSummary — name/client/dates only, no requirements). Since
+  // it's still the same underlying job, look up the full JobSummary already
+  // loaded here for the real crew list; ArchivedJobDetail falls back to a
+  // "not available" message on the rare miss instead of showing nothing.
+  const openSummary = useMemo(() => summaries.find((s) => s.job.id === openJobId), [summaries, openJobId])
+  const openPersonJob = useMemo(() => personCompleted.find((j) => j.id === openJobId), [personCompleted, openJobId])
 
   const sortedPeople = useMemo(() => [...people].sort((a, b) => `${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`)), [people])
 
@@ -5063,6 +5220,7 @@ function ArchiveContent({ summaries, clients, people, reloadSummaries }: { summa
               endDate={s.job.end_date}
               badge={<DeletedBadge />}
               meta={`Deleted by ${s.job.deleted_by_name ?? 'Unknown'}${s.job.deleted_at ? ' · ' + deletedAtLabel(s.job.deleted_at) : ''}`}
+              onOpen={() => setOpenJobId(s.job.id)}
               action={
                 <button
                   onClick={() => handleRestore(s.job.id)}
@@ -5076,15 +5234,63 @@ function ArchiveContent({ summaries, clients, people, reloadSummaries }: { summa
           ))}
 
         {!personFilter &&
-          completed.map((s) => <ArchiveRow key={s.job.id} name={s.job.name} clientName={clients[s.job.client_id]?.name ?? 'Unknown client'} startDate={s.job.start_date} endDate={s.job.end_date} />)}
+          completed.map((s) => (
+            <ArchiveRow
+              key={s.job.id}
+              name={s.job.name}
+              clientName={clients[s.job.client_id]?.name ?? 'Unknown client'}
+              startDate={s.job.start_date}
+              endDate={s.job.end_date}
+              onOpen={() => setOpenJobId(s.job.id)}
+            />
+          ))}
         {!personFilter && completed.length === 0 && deleted.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No archived jobs yet.</div>}
 
         {personFilter && personLoading && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>Loading…</div>}
-        {personFilter && !personLoading && personCompleted.map((j) => <ArchiveRow key={j.id} name={j.name} clientName={j.client_name} startDate={j.start_date} endDate={j.end_date} />)}
+        {personFilter &&
+          !personLoading &&
+          personCompleted.map((j) => (
+            <ArchiveRow key={j.id} name={j.name} clientName={j.client_name} startDate={j.start_date} endDate={j.end_date} onOpen={() => setOpenJobId(j.id)} />
+          ))}
         {personFilter && !personLoading && personCompleted.length === 0 && (
           <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No completed jobs for this person yet.</div>
         )}
       </div>
+
+      {openJobId && openSummary && (
+        <ArchivedJobDetail
+          name={openSummary.job.name}
+          clientName={clients[openSummary.job.client_id]?.name ?? 'Unknown client'}
+          startDate={openSummary.job.start_date}
+          endDate={openSummary.job.end_date}
+          badge={
+            openSummary.job.deleted_at ? (
+              <DeletedBadge />
+            ) : (
+              <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 10.5, padding: '2px 8px', borderRadius: 999, color: 'var(--ink-muted)', background: 'var(--track)', whiteSpace: 'nowrap' }}>
+                Complete
+              </span>
+            )
+          }
+          meta={openSummary.job.deleted_at ? `Deleted by ${openSummary.job.deleted_by_name ?? 'Unknown'}${openSummary.job.deleted_at ? ' · ' + deletedAtLabel(openSummary.job.deleted_at) : ''}` : undefined}
+          requirements={openSummary.requirements}
+          onClose={() => setOpenJobId(undefined)}
+        />
+      )}
+      {openJobId && !openSummary && openPersonJob && (
+        <ArchivedJobDetail
+          name={openPersonJob.name}
+          clientName={openPersonJob.client_name}
+          startDate={openPersonJob.start_date}
+          endDate={openPersonJob.end_date}
+          badge={
+            <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 10.5, padding: '2px 8px', borderRadius: 999, color: 'var(--ink-muted)', background: 'var(--track)', whiteSpace: 'nowrap' }}>
+              Complete
+            </span>
+          }
+          onClose={() => setOpenJobId(undefined)}
+        />
+      )}
     </div>
   )
 }
@@ -5717,16 +5923,38 @@ function PersonHistoryTab({ person }: { person: Person }) {
 // instead of conflating two different sources into one list.
 function PersonCompletedJobsTab({ person }: { person: Person }) {
   const { data: jobs, loading } = useCompletedJobsForPerson(person.id)
+  // Same click-through parity as ArchiveContent's own rows, and the same
+  // constraint: useCompletedJobsForPerson only returns name/client/dates,
+  // so there's no crew list to show here beyond the "Complete" badge —
+  // this tab is itself scoped to one person, so re-showing them in a crew
+  // list would be redundant even if the data were available.
+  const [openJobId, setOpenJobId] = useState<string | undefined>(undefined)
+  const openJob = jobs.find((j) => j.id === openJobId)
 
   return (
     <div>
       <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 12 }}>Completed jobs</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {jobs.map((j) => (
-          <ArchiveRow key={j.id} name={j.name} clientName={j.client_name} startDate={j.start_date} endDate={j.end_date} />
+          <ArchiveRow key={j.id} name={j.name} clientName={j.client_name} startDate={j.start_date} endDate={j.end_date} onOpen={() => setOpenJobId(j.id)} />
         ))}
         {!loading && jobs.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', padding: '12px 0' }}>No completed jobs for this person yet.</div>}
       </div>
+
+      {openJob && (
+        <ArchivedJobDetail
+          name={openJob.name}
+          clientName={openJob.client_name}
+          startDate={openJob.start_date}
+          endDate={openJob.end_date}
+          badge={
+            <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 10.5, padding: '2px 8px', borderRadius: 999, color: 'var(--ink-muted)', background: 'var(--track)', whiteSpace: 'nowrap' }}>
+              Complete
+            </span>
+          }
+          onClose={() => setOpenJobId(undefined)}
+        />
+      )}
     </div>
   )
 }
