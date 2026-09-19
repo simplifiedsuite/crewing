@@ -3684,6 +3684,15 @@ function JobChip({ summary, client, fallbackIndex, active, onClick }: { summary:
         <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{summary.job.name}</div>
         <CommitmentBadge job={summary.job} />
       </div>
+      {/* Testing feedback — dates on the tile itself, not just after
+          selecting it. Same format as the "Roles — [Job] · [dates]" header
+          below (formatDate, start – end shown as-is, not collapsed for
+          single-day jobs) for consistency between the two. Visually
+          secondary to the job name — smaller, muted, same tier as the
+          confirmed-count line rather than competing with the name. */}
+      <div style={{ fontFamily: 'var(--font)', fontVariantNumeric: 'tabular-nums', fontSize: 11.5, marginTop: 2, color: 'var(--ink-muted)' }}>
+        {formatDate(summary.job.start_date)} – {formatDate(summary.job.end_date)}
+      </div>
       <div style={{ fontFamily: 'var(--font)', fontVariantNumeric: 'tabular-nums', fontSize: 12, marginTop: 3, color: complete ? 'var(--success)' : 'var(--attention)', fontWeight: 600 }}>
         {confirmed}/{required} confirmed
       </div>
