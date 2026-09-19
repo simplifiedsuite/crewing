@@ -502,6 +502,7 @@ function ProfileEditForm({ person, onCancel, onSaved }: { person: Person; onCanc
 // here — just fetch-and-show, copy, and an explicit, clearly-warned
 // regenerate.
 function CalendarFeedSection() {
+  const { person } = useCrewAuth()
   const [feedUrl, setFeedUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [regenerating, setRegenerating] = useState(false)
@@ -549,7 +550,10 @@ function CalendarFeedSection() {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: 'var(--font-body)', fontSize: 14.5, color: 'var(--ink)', fontWeight: 600 }}>Subscribe to your bookings</div>
             <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 3, lineHeight: 1.4 }}>
-              Add this link to your phone or computer's calendar app to see your jobs alongside everything else. Confirmed jobs show normally; offered or pencilled jobs show as "tentative" so you can tell them apart.
+              {/* Pencilled is staff-only (same feed guard as the app's own
+                  booking list) — freelancers never actually get a pencilled
+                  entry on this feed, so this copy shouldn't promise one. */}
+              Add this link to your phone or computer's calendar app to see your jobs alongside everything else. Confirmed jobs show normally; offered{person?.employment_type === 'staff' ? ' or pencilled' : ''} jobs show as "tentative" so you can tell them apart.
             </div>
           </div>
         </div>

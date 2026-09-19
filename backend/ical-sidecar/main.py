@@ -7,8 +7,9 @@ feeds, sharing only this file's DB-connection plumbing and ical_feed.py's
 low-level RFC 5545 helpers — getting one has no effect on and exposes
 nothing about the other:
 
-- /feed/{token}.ics — one crew member's own confirmed/offered/pencilled
-  bookings, looked up by their personal Person.calendar_feed_token.
+- /feed/{token}.ics — one crew member's own confirmed/offered bookings
+  (plus pencilled, staff only), looked up by their personal
+  Person.calendar_feed_token.
 - /feed/dakboard/{token}.ics — the org-wide "what's booked" view, looked
   up by the shared org_settings.dakboard_feed_token, for an internal
   Dakboard display rather than any one person.
@@ -56,12 +57,21 @@ def feed(token: str):
                 raise HTTPException(status_code=404, detail="Unknown or revoked calendar feed token")
             person = Person(id=person_row["id"], name=person_row["name"], calendar_feed_token=token)
 
-            # Confirmed, offered, and pencilled bookings — declined and
-            # cancelled are never useful on a personal calendar. Per the
-            # schema addendum's open question (resolved): this feed shows
-            # both flavours of tentative booking, not confirmed-only, each
+            # Confirmed and offered bookings — declined and cancelled are
+            # never useful on a personal calendar. Per the schema
+            # addendum's open question (resolved): this feed shows both
+            # flavours of tentative booking, not confirmed-only, each
             # rendered with STATUS:TENTATIVE (see ical_feed.py's module
             # docstring for why that beats a text-prefix hack).
+            #
+            # Pencilled — staff only, same product decision and same
+            # employment_type guard as the crew mobile app's own booking
+            # list (ListMyBookings, backend/internal/handlers/crew_bookings.go):
+            # a Pencil is a soft hold, and freelancers make a real
+            # accept/decline decision through the offer flow, so a Pencil
+            # showing up on their calendar would look like something
+            # they'd already been asked about. Staff don't go through that
+            # step at all, so it's already part of their real working plan.
             cur.execute(
                 """
                 SELECT b.id, b.status, b.notes, b.start_date, b.end_date, b.call_time,
@@ -72,8 +82,11 @@ def feed(token: str):
                 JOIN jobs j ON j.id = jr.job_id
                 JOIN clients c ON c.id = j.client_id
                 JOIN roles ro ON ro.id = jr.role_id
+                JOIN people p ON p.id = b.person_id
                 LEFT JOIN venues v ON v.id = j.venue_id
-                WHERE b.person_id = %s AND b.status IN ('confirmed', 'offered', 'pencilled')
+                WHERE b.person_id = %s
+                      AND (b.status IN ('confirmed', 'offered')
+                           OR (b.status = 'pencilled' AND p.employment_type = 'staff'))
                 """,
                 (person_row["id"],),
             )
