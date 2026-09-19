@@ -152,7 +152,7 @@ func (a *API) DeleteJobRequirement(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// --- Crew matching (Planner's "Available & suitable / Possible / Unavailable") ---
+// --- Crew matching (Planner's "Preferred / Possible / Unavailable") ---
 //
 // Simplification flagged for Phase 1: base_location-to-venue proximity
 // (mentioned in the data model's own derived-values table) needs geocoding

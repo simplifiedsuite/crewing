@@ -170,7 +170,7 @@ function MatchingScreen({ jobName, req, onBack, onOffered }: { jobName: string; 
         </div>
       </div>
 
-      <CandidateGroup title="Available & suitable" tone="var(--success)">
+      <CandidateGroup title="Preferred" tone="var(--success)">
         {pool.suitable.length === 0 && <div style={{ padding: '0 20px', fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>No one in this group right now.</div>}
         {pool.suitable.map((c) => (
           <div key={c.person_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', borderTop: '1px solid var(--line)' }}>

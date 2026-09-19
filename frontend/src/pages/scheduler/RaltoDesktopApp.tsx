@@ -3747,10 +3747,13 @@ function RequirementRow({ req, active, onOpen }: { req: JobRequirementWithCounts
   )
 }
 
-// "Already asked" — addendum v2 §5. Scoped to the whole Job (a decline on
-// Camera still surfaces while crewing Utilities on the same job), so this
-// carries whichever role the ask was against rather than assuming it's
-// always the role currently being crewed.
+// "Awaiting response" — addendum v2 §5 (displayed name only; internally
+// still "already asked", see the already_asked/AlreadyAsked* names below —
+// testing feedback asked for a display-label rename, not a data rename).
+// Scoped to the whole Job (a decline on Camera still surfaces while
+// crewing Utilities on the same job), so this carries whichever role the
+// ask was against rather than assuming it's always the role currently
+// being crewed.
 function shortDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
@@ -4021,7 +4024,7 @@ function PlannerContent({
   const { data: pool, reload: reloadCandidates } = useCandidates(activeReq?.id)
   // Testing feedback item L — currently pencilled/offered/confirmed people
   // for the active requirement, with their day coverage. Planner already
-  // has "Already asked" for awaiting-response/declined; this is the
+  // has "Awaiting response" for awaiting-response/declined; this is the
   // "who's actually holding a slot right now" counterpart it was missing.
   const { data: currentBookings, reload: reloadCurrentBookings } = useBookingsForRequirement(activeReq?.id)
 
@@ -4049,7 +4052,7 @@ function PlannerContent({
   // "Not available" — a decline recorded straight from the phone call,
   // never a digital offer/respond round trip. Reuses CreateBooking with
   // status: 'declined' (no email, same as Pencil) so it lands in the same
-  // Already Asked → Declined list a real digital decline would.
+  // Awaiting Response → Declined list a real digital decline would.
   async function handleNotAvailable(personId: string, name: string) {
     if (!activeReq) return
     const { start_date: startDate, end_date: endDate } = activeReq
@@ -4139,12 +4142,37 @@ function PlannerContent({
                 />
               </div>
             )}
-            <CandidateGroup title="AVAILABLE & SUITABLE" tone="var(--success)">
+            {/* Testing feedback — category order: Currently booked (above) /
+                declined-follow-up prompt (above), then Awaiting response /
+                Preferred / Unavailable / Possible / Conflict. Group
+                membership and within-group sorting are unchanged — this is
+                a display-order swap only. */}
+            {(pool.already_asked.awaiting_response.length > 0 || pool.already_asked.declined.length > 0) && (
+              <CandidateGroup title="AWAITING RESPONSE" tone="var(--attention)">
+                {pool.already_asked.awaiting_response.map((entry, i) => (
+                  <AlreadyAskedRow key={`awaiting-${entry.person_id}-${i}`} entry={entry} declined={false} />
+                ))}
+                {pool.already_asked.declined.map((entry, i) => (
+                  <AlreadyAskedRow key={`declined-${entry.person_id}-${i}`} entry={entry} declined={true} />
+                ))}
+              </CandidateGroup>
+            )}
+
+            <CandidateGroup title="PREFERRED" tone="var(--success)">
               {pool.suitable.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)' }}>No one in this group right now.</div>}
               {activeReq &&
                 pool.suitable.map((c) => (
                   <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="suitable" onBook={handleOffer} onDecline={handleNotAvailable} dayLabels={dayLabels} />
                 ))}
+            </CandidateGroup>
+
+            <CandidateGroup title="UNAVAILABLE" tone="var(--ink-muted)">
+              {pool.unavailable.map((c) => (
+                <div key={c.person_id} style={{ padding: '8px 0', opacity: 0.6 }}>
+                  <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{c.name}</div>
+                  <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>{c.reason}</div>
+                </div>
+              ))}
             </CandidateGroup>
 
             <CandidateGroup title="POSSIBLE" tone="var(--attention)">
@@ -4161,26 +4189,6 @@ function PlannerContent({
                   pool.conflicted.map((c) => (
                     <CandidateRow key={c.person_id} candidate={c} activeReq={activeReq} variant="conflicted" onBook={handleOffer} onDecline={handleNotAvailable} onOpenConflictJob={onSelectJob} dayLabels={dayLabels} />
                   ))}
-              </CandidateGroup>
-            )}
-
-            <CandidateGroup title="UNAVAILABLE" tone="var(--ink-muted)">
-              {pool.unavailable.map((c) => (
-                <div key={c.person_id} style={{ padding: '8px 0', opacity: 0.6 }}>
-                  <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)' }}>{c.name}</div>
-                  <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 1 }}>{c.reason}</div>
-                </div>
-              ))}
-            </CandidateGroup>
-
-            {(pool.already_asked.awaiting_response.length > 0 || pool.already_asked.declined.length > 0) && (
-              <CandidateGroup title="ALREADY ASKED" tone="var(--attention)">
-                {pool.already_asked.awaiting_response.map((entry, i) => (
-                  <AlreadyAskedRow key={`awaiting-${entry.person_id}-${i}`} entry={entry} declined={false} />
-                ))}
-                {pool.already_asked.declined.map((entry, i) => (
-                  <AlreadyAskedRow key={`declined-${entry.person_id}-${i}`} entry={entry} declined={true} />
-                ))}
               </CandidateGroup>
             )}
           </div>
