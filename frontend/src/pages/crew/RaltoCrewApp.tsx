@@ -82,6 +82,21 @@ function Row({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: s
 // Home
 // ---------------------------------------------------------------------------
 
+// Bug fix — this was a hardcoded "Good morning" string, not a stale
+// timezone conversion or an off-by-one threshold (checked both before
+// assuming): there was no time-of-day logic here at all. new Date() reads
+// the device's own local clock, already in the viewer's own timezone —
+// nothing to convert, this just needs to actually be called. Thresholds
+// aren't defined anywhere else in the codebase to reuse, so this uses the
+// standard split: before noon is morning, noon–6pm is afternoon,
+// otherwise evening.
+function timeOfDayGreeting(): string {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 18) return 'Good afternoon'
+  return 'Good evening'
+}
+
 function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: { bookings: CrewBooking[]; alerts: OperationalAlert[]; onRespond: (id: string, decision: 'accept' | 'decline') => Promise<void>; onAcknowledge: (alert: OperationalAlert) => Promise<void>; onOpenJob: (b: CrewBooking) => void }) {
   const { person } = useCrewAuth()
   const [respondingId, setRespondingId] = useState<string | null>(null)
@@ -108,7 +123,7 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
   return (
     <div>
       <div style={{ padding: '22px 20px 4px' }}>
-        <div style={{ fontFamily: 'var(--font-body)', fontSize: 14, color: 'var(--ink-muted)' }}>Good morning</div>
+        <div style={{ fontFamily: 'var(--font-body)', fontSize: 14, color: 'var(--ink-muted)' }}>{timeOfDayGreeting()}</div>
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 22, color: 'var(--ink)' }}>
           {person?.first_name} {person?.last_name}
         </div>
