@@ -16,7 +16,7 @@ import (
 
 const personSelectColumns = `id, first_name, last_name, email, phone, base_location, employment_type, status,
 	preferred_status, standard_rate, rate_currency, overtime_rule_id, notes, phone_number,
-	notification_channels, vehicle_registration, active, must_change_password, created_at, updated_at`
+	notification_channels, vehicle_registration, company_name, active, must_change_password, created_at, updated_at`
 
 // scanPerson scans the fixed personSelectColumns list into p. extra lets a
 // caller select additional trailing columns (e.g. password_hash for login)
@@ -24,7 +24,7 @@ const personSelectColumns = `id, first_name, last_name, email, phone, base_locat
 func scanPerson(row pgx.Row, p *models.Person, extra ...interface{}) error {
 	dest := []interface{}{&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone, &p.BaseLocation, &p.EmploymentType, &p.Status,
 		&p.PreferredStatus, &p.StandardRate, &p.RateCurrency, &p.OvertimeRuleID, &p.Notes, &p.PhoneNumber,
-		&p.NotificationChannels, &p.VehicleRegistration, &p.Active, &p.MustChangePassword, &p.CreatedAt, &p.UpdatedAt}
+		&p.NotificationChannels, &p.VehicleRegistration, &p.CompanyName, &p.Active, &p.MustChangePassword, &p.CreatedAt, &p.UpdatedAt}
 	dest = append(dest, extra...)
 	return row.Scan(dest...)
 }
@@ -110,6 +110,7 @@ type personWriteRequest struct {
 	PhoneNumber          *string                `json:"phone_number"`
 	NotificationChannels *string                `json:"notification_channels"`
 	VehicleRegistration  *string                `json:"vehicle_registration"`
+	CompanyName          *string                `json:"company_name"`
 }
 
 // nilIfEmpty treats a *string pointing at "" the same as an absent key —
@@ -167,12 +168,12 @@ func (a *API) CreatePerson(w http.ResponseWriter, r *http.Request) {
 	err := scanPerson(a.DB.QueryRow(r.Context(),
 		`INSERT INTO people (first_name, last_name, email, phone, base_location, employment_type, status,
 		                      preferred_status, standard_rate, rate_currency, overtime_rule_id, notes,
-		                      phone_number, notification_channels, vehicle_registration, organisation_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		                      phone_number, notification_channels, vehicle_registration, company_name, organisation_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		 RETURNING `+personSelectColumns,
 		req.FirstName, req.LastName, emailOrNil(req.Email), req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
 		req.PreferredStatus, req.StandardRate, req.RateCurrency, req.OvertimeRuleID, req.Notes,
-		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, currentOrgID,
+		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, req.CompanyName, currentOrgID,
 	), &p)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create person")
@@ -198,12 +199,13 @@ func (a *API) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 	err := scanPerson(a.DB.QueryRow(r.Context(),
 		`UPDATE people SET first_name = $1, last_name = $2, email = $3, phone = $4, base_location = $5,
 		        employment_type = $6, status = $7, preferred_status = $8, standard_rate = $9, rate_currency = $10,
-		        overtime_rule_id = $11, notes = $12, phone_number = $13, notification_channels = $14, vehicle_registration = $15, updated_at = now()
-		 WHERE id = $16 AND organisation_id = $17
+		        overtime_rule_id = $11, notes = $12, phone_number = $13, notification_channels = $14, vehicle_registration = $15,
+		        company_name = $16, updated_at = now()
+		 WHERE id = $17 AND organisation_id = $18
 		 RETURNING `+personSelectColumns,
 		req.FirstName, req.LastName, emailOrNil(req.Email), req.Phone, req.BaseLocation, req.EmploymentType, req.Status,
 		req.PreferredStatus, req.StandardRate, req.RateCurrency, req.OvertimeRuleID, req.Notes,
-		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, id, currentOrgID,
+		req.PhoneNumber, req.NotificationChannels, req.VehicleRegistration, req.CompanyName, id, currentOrgID,
 	), &p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "person not found")

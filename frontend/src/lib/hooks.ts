@@ -667,6 +667,7 @@ export interface PersonWriteInput {
   phone_number?: string
   notification_channels?: string
   vehicle_registration?: string
+  company_name?: string
 }
 
 export function createPerson(input: PersonWriteInput) {

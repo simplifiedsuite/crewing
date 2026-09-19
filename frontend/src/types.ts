@@ -39,6 +39,11 @@ export interface Person {
   // The crew member's own personal vehicle registration, for site/parking
   // access — distinct from a fleet Vehicle (see Vehicle/JobVehicle below).
   vehicle_registration?: string
+  // Many freelancers operate through their own limited company, which is
+  // who Simplified Suite actually contracts with on paperwork. Captured
+  // for future auto-generated paperwork (contracts, purchase orders) —
+  // Crewing-local, not shown anywhere but the edit screen yet.
+  company_name?: string
   active: boolean
   must_change_password: boolean
   created_at: string

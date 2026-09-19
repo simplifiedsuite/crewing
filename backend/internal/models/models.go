@@ -26,14 +26,14 @@ type User struct {
 // --- Client ---
 
 type Client struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	ContactName   *string   `json:"contact_name,omitempty"`
-	ContactEmail  *string   `json:"contact_email,omitempty"`
-	ContactPhone  *string   `json:"contact_phone,omitempty"`
-	Notes         *string   `json:"notes,omitempty"`
-	BrandColorHex *string   `json:"brand_color_hex,omitempty"`
-	Website       *string   `json:"website,omitempty"`
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	ContactName   *string `json:"contact_name,omitempty"`
+	ContactEmail  *string `json:"contact_email,omitempty"`
+	ContactPhone  *string `json:"contact_phone,omitempty"`
+	Notes         *string `json:"notes,omitempty"`
+	BrandColorHex *string `json:"brand_color_hex,omitempty"`
+	Website       *string `json:"website,omitempty"`
 	// CoreClientID links this row to Core's own Client entity — see
 	// migrations/0009 and docs/simplified_suite_core_v0_6.md §5's mirroring
 	// table. Nil for clients that predate this link or have never been
@@ -98,12 +98,12 @@ const (
 )
 
 type Job struct {
-	ID               string        `json:"id"`
-	Name             string        `json:"name"`
-	ClientID         string        `json:"client_id"`
-	ProjectReference *string       `json:"project_reference,omitempty"`
-	VenueID          *string       `json:"venue_id,omitempty"`
-	ProjectID        *string       `json:"project_id,omitempty"`
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	ClientID         string  `json:"client_id"`
+	ProjectReference *string `json:"project_reference,omitempty"`
+	VenueID          *string `json:"venue_id,omitempty"`
+	ProjectID        *string `json:"project_id,omitempty"`
 	// SharedContractID is an optional direct link to Core's Contract entity
 	// — see migrations/0009 and docs/simplified_suite_core_v0_6.md §8a. Not
 	// a rename of ProjectID/projects.shared_project_id: Ralto's own
@@ -111,8 +111,8 @@ type Job struct {
 	// SharedContractName is a cached label from the point this was linked
 	// (or re-linked via the picker) — not live-refreshed, matching the
 	// Monday integration's own "manual fetch, no reconciliation" rule (§5b).
-	SharedContractID   *string       `json:"shared_contract_id,omitempty"`
-	SharedContractName *string       `json:"shared_contract_name,omitempty"`
+	SharedContractID   *string `json:"shared_contract_id,omitempty"`
+	SharedContractName *string `json:"shared_contract_name,omitempty"`
 	// SharedJobID links this Job to Core's own shared Job entity — set
 	// when this Job was created from a Monday fetch, whether that fetch
 	// found an existing Core Job (created earlier, by either product) or
@@ -270,11 +270,17 @@ type Person struct {
 	// entity, migrations/0014_fleet_vehicles.sql). Editable by both the
 	// scheduler and the crew member themselves.
 	VehicleRegistration *string `json:"vehicle_registration,omitempty"`
-	Active               bool            `json:"active"`
-	MustChangePassword   bool            `json:"must_change_password"`
-	PasswordHash         *string         `json:"-"`
-	CreatedAt            time.Time       `json:"created_at"`
-	UpdatedAt            time.Time       `json:"updated_at"`
+	// CompanyName — many freelancers operate through their own limited
+	// company, which is who Simplified Suite actually contracts with on
+	// paperwork. Crewing-local (not a Core Person field): captured now for
+	// future auto-generated paperwork (contracts, purchase orders), not
+	// used or displayed anywhere yet.
+	CompanyName        *string   `json:"company_name,omitempty"`
+	Active             bool      `json:"active"`
+	MustChangePassword bool      `json:"must_change_password"`
+	PasswordHash       *string   `json:"-"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type PersonRole struct {

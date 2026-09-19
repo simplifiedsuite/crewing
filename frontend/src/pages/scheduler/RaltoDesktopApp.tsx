@@ -5037,6 +5037,7 @@ function personToWriteInput(p: Person): PersonWriteInput {
     phone_number: p.phone_number,
     notification_channels: p.notification_channels,
     vehicle_registration: p.vehicle_registration,
+    company_name: p.company_name,
   }
 }
 
@@ -5069,6 +5070,10 @@ function PersonForm({
   const [rateCurrency, setRateCurrency] = useState(person?.rate_currency ?? '')
   const [notes, setNotes] = useState(person?.notes ?? '')
   const [vehicleRegistration, setVehicleRegistration] = useState(person?.vehicle_registration ?? '')
+  // Many freelancers operate through their own limited company, which is
+  // who Simplified Suite actually contracts with on paperwork — captured
+  // here for future auto-generated paperwork, not displayed elsewhere yet.
+  const [companyName, setCompanyName] = useState(person?.company_name ?? '')
   const [roleId, setRoleId] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
@@ -5107,6 +5112,7 @@ function PersonForm({
         rate_currency: rateCurrency || undefined,
         notes: notes || undefined,
         vehicle_registration: vehicleRegistration || undefined,
+        company_name: companyName || undefined,
       }
       const saved = person ? await updatePerson(person.id, payload) : await createPerson(payload)
       if (!person && roleId) {
@@ -5164,6 +5170,10 @@ function PersonForm({
           <label style={{ ...labelStyle, flex: 1 }}>
             Vehicle registration (optional)
             <input value={vehicleRegistration} onChange={(e) => setVehicleRegistration(e.target.value)} placeholder="e.g. AB12 CDE" style={inputStyle} />
+          </label>
+          <label style={{ ...labelStyle, flex: 1 }}>
+            Company name (optional)
+            <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="e.g. Taylor Media Ltd" style={inputStyle} />
           </label>
         </div>
 
