@@ -521,18 +521,25 @@ function CalendarContent({ summaries, clients, onOpenJob }: { summaries: JobSumm
   const [refDate, setRefDate] = useState(today)
   const [selectedDate, setSelectedDate] = useState(today)
 
+  // Deleted jobs drop off the Calendar same as every other normal view —
+  // matches desktop's own CalendarContent (which otherwise shows every
+  // status here, unlike Jobs/Planner which already exclude Complete). This
+  // was missing on mobile: a cancelled+deleted job (e.g. a disposable test
+  // job) still showed here with live confirmed/required counts.
   const calendarJobs: CalendarJob[] = useMemo(
     () =>
-      summaries.map((s, i) => ({
-        id: s.job.id,
-        name: s.job.name,
-        clientName: clients[s.job.client_id]?.name ?? 'Unknown client',
-        clientColor: clientColor(clients[s.job.client_id], i),
-        start: s.job.start_date,
-        end: s.job.end_date,
-        confirmed: s.confirmed,
-        required: s.required,
-      })),
+      summaries
+        .filter((s) => !s.job.deleted_at)
+        .map((s, i) => ({
+          id: s.job.id,
+          name: s.job.name,
+          clientName: clients[s.job.client_id]?.name ?? 'Unknown client',
+          clientColor: clientColor(clients[s.job.client_id], i),
+          start: s.job.start_date,
+          end: s.job.end_date,
+          confirmed: s.confirmed,
+          required: s.required,
+        })),
     [summaries, clients],
   )
 
@@ -775,7 +782,17 @@ function JobsContent({ summaries, clients, venues, people, reloadSummaries }: { 
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase()
-    let list = summaries.filter((s) => s.job.name.toLowerCase().includes(q) || (clients[s.job.client_id]?.name ?? '').toLowerCase().includes(q))
+    // Deleted jobs (always cancelled, never complete — see
+    // migrations/0016) are excluded here regardless of which filter tab
+    // is active, same as desktop drops them everywhere except Archive.
+    // Unlike desktop's own JobsContent, Complete jobs are deliberately
+    // NOT excluded at this level — mobile has no separate Archive screen,
+    // so the "Complete" filter tab below is this list's only way to reach
+    // them. Missing the deleted_at exclusion let cancelled+deleted test
+    // jobs show up with live "unfilled"/"attention" badges as if still open.
+    let list = summaries
+      .filter((s) => !s.job.deleted_at)
+      .filter((s) => s.job.name.toLowerCase().includes(q) || (clients[s.job.client_id]?.name ?? '').toLowerCase().includes(q))
     if (filter === 'attention') list = list.filter((s) => ['critical', 'attention'].includes(urgencyFor(s).tier))
     else if (filter === 'complete') list = list.filter((s) => urgencyFor(s).tier === 'complete')
     const rank: Record<string, number> = { critical: 0, attention: 1, quiet: 2, complete: 3 }
@@ -917,7 +934,12 @@ function PeopleTab({ summary, people }: { summary: JobSummary; people: Record<st
 function PlannerContent({ summaries, clients, people, selectedJobId, onSelectJob, reloadSummaries }: { summaries: JobSummary[]; clients: Record<string, Client>; people: Record<string, Person>; selectedJobId: string | undefined; onSelectJob: (id: string) => void; reloadSummaries: () => void }) {
   const [detailReq, setDetailReq] = useState<JobRequirementWithCounts | null>(null)
   const [view, setView] = useState<'roles' | 'people'>('roles')
-  const summary = summaries.find((s) => s.job.id === selectedJobId) ?? summaries[0]
+  // Same exclusion as desktop's own PlannerContent — Complete jobs are
+  // done crewing, and deleted (always-cancelled) jobs shouldn't be
+  // crewable at all. Missing here let cancelled+deleted test jobs show
+  // up as a selectable tile with live "unfilled" role counts.
+  const activeSummaries = useMemo(() => summaries.filter((s) => s.job.status !== 'complete' && !s.job.deleted_at), [summaries])
+  const summary = activeSummaries.find((s) => s.job.id === selectedJobId) ?? activeSummaries[0]
 
   useEffect(() => {
     setDetailReq(null)
@@ -957,7 +979,7 @@ function PlannerContent({ summaries, clients, people, selectedJobId, onSelectJob
       </div>
 
       <div style={{ display: 'flex', gap: 8, padding: '16px 20px 4px', overflowX: 'auto' }}>
-        {summaries.map((s, i) => (
+        {activeSummaries.map((s, i) => (
           <JobChip key={s.job.id} summary={s} client={clients[s.job.client_id]} fallbackIndex={i} active={s.job.id === summary.job.id} onClick={() => onSelectJob(s.job.id)} />
         ))}
       </div>
