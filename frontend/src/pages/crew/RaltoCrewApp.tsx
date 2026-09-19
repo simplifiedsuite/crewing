@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Home as HomeIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight, Link as LinkIcon, Copy, RefreshCw, Car } from 'lucide-react'
+import { Home as HomeIcon, Calendar as CalendarIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight, Link as LinkIcon, Copy, RefreshCw, Car } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { formatDate, formatDateRange, formatTime } from '../../lib/format'
 import { useCrewAuth } from '../../context/CrewAuthContext'
@@ -313,6 +313,212 @@ function JobDetailScreen({ job, onBack }: { job: CrewBooking; onBack: () => void
       )}
 
       <div style={{ height: 40 }} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Calendar
+// ---------------------------------------------------------------------------
+
+// Month/week grid + dots + agenda-below pattern, reused from the scheduler
+// app's own mobile Calendar (RaltoMobileApp.tsx's CalendarContent/DayCell) —
+// the task asked for the same interaction, not a shared component (the two
+// apps don't share components anywhere else either). Scoped down from that
+// version: no confirmed/required counts (this is one person's own bookings,
+// not a job's crewing status), and the agenda card reuses this app's own
+// Upcoming-row visual (client-colour stripe + status icon) rather than
+// inventing a third card style.
+function startOfWeek(date: Date): Date {
+  const d = new Date(date)
+  const day = (d.getDay() + 6) % 7
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() - day)
+  return d
+}
+function addDays(date: Date, n: number): Date {
+  const d = new Date(date)
+  d.setDate(d.getDate() + n)
+  return d
+}
+function sameDay(a: Date, b: Date): boolean {
+  return a.toDateString() === b.toDateString()
+}
+function toISODate(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+function getMonthWeeks(refDate: Date): Date[][] {
+  const year = refDate.getFullYear()
+  const month = refDate.getMonth()
+  const firstOfMonth = new Date(year, month, 1)
+  const lastOfMonth = new Date(year, month + 1, 0)
+  const gridStart = startOfWeek(firstOfMonth)
+  const gridEnd = startOfWeek(lastOfMonth)
+  const weeks: Date[][] = []
+  let cursor = gridStart
+  while (cursor <= gridEnd) {
+    weeks.push(Array.from({ length: 7 }, (_, i) => addDays(cursor, i)))
+    cursor = addDays(cursor, 7)
+  }
+  return weeks
+}
+
+const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+const MONTH_LABELS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+function CalendarDayCell({ date, inMonth, isToday, isSelected, bookings, onSelect }: { date: Date; inMonth: boolean; isToday: boolean; isSelected: boolean; bookings: CrewBooking[]; onSelect: (d: Date) => void }) {
+  return (
+    <button onClick={() => onSelect(date)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '6px 0 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: inMonth ? 1 : 0.35 }}>
+      <span
+        style={{
+          width: 26,
+          height: 26,
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: 'var(--font-body)',
+          fontSize: 13,
+          fontWeight: isToday || isSelected ? 700 : 500,
+          color: isSelected ? '#fff' : isToday ? 'var(--primary)' : 'var(--ink)',
+          background: isSelected ? 'var(--primary)' : 'transparent',
+        }}
+      >
+        {date.getDate()}
+      </span>
+      <div style={{ display: 'flex', gap: 2, height: 5 }}>
+        {bookings.slice(0, 3).map((b) => (
+          <span key={b.id} style={{ width: 5, height: 5, borderRadius: '50%', background: clientStripeColor(b.client_color_hex) }} />
+        ))}
+      </div>
+    </button>
+  )
+}
+
+function CalendarAgendaCard({ booking, onOpen }: { booking: CrewBooking; onOpen: (b: CrewBooking) => void }) {
+  const s = statusStyle[booking.status] ?? statusStyle.confirmed
+  const StatusIcon = s.Icon
+  return (
+    <button
+      onClick={() => onOpen(booking)}
+      style={{ position: 'relative', width: '100%', textAlign: 'left', background: '#fff', border: '1px solid var(--line)', borderRadius: 12, padding: '12px 14px 12px 18px', marginBottom: 10, cursor: 'pointer', overflow: 'hidden', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}
+    >
+      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientStripeColor(booking.client_color_hex) }} />
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{booking.job_name}</div>
+        <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 2 }}>
+          {booking.client_name} · {booking.role_name}
+        </div>
+        <div style={{ fontFamily: 'var(--font-body)', fontSize: 12.5, color: 'var(--ink-muted)', marginTop: 2 }}>
+          {booking.call_time ? formatTime(booking.call_time) : (booking.venue_name ?? 'Venue TBC')}
+        </div>
+      </div>
+      <div style={{ flexShrink: 0, width: 24, height: 24, borderRadius: '50%', background: s.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <StatusIcon size={13} color={s.color} strokeWidth={2.5} />
+      </div>
+    </button>
+  )
+}
+
+// CalendarScreen — browsing only, same as the scheduler's own Calendar (no
+// accept/decline here; that stays on Home/Availability). bookings is the
+// same list the root component already fetches from GET /crew/bookings,
+// which already excludes declined/cancelled and already gates Pencilled to
+// staff-only (see ListMyBookings) — nothing extra to filter here, and
+// nothing new for a freelancer to see just because this is a new screen.
+function CalendarScreen({ bookings, onOpenJob }: { bookings: CrewBooking[]; onOpenJob: (b: CrewBooking) => void }) {
+  const [mode, setMode] = useState<'month' | 'week'>('month')
+  const today = useMemo(() => new Date(), [])
+  const [refDate, setRefDate] = useState(today)
+  const [selectedDate, setSelectedDate] = useState(today)
+
+  function bookingsOnDate(date: Date): CrewBooking[] {
+    const iso = toISODate(date)
+    return bookings.filter((b) => b.start_date <= iso && iso <= b.end_date)
+  }
+
+  const weeks = mode === 'month' ? getMonthWeeks(refDate) : [Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(refDate), i))]
+
+  const goPrev = () => setRefDate((d) => (mode === 'month' ? new Date(d.getFullYear(), d.getMonth() - 1, 1) : addDays(d, -7)))
+  const goNext = () => setRefDate((d) => (mode === 'month' ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, 7)))
+
+  const headerLabel =
+    mode === 'month'
+      ? `${MONTH_LABELS[refDate.getMonth()]} ${refDate.getFullYear()}`
+      : (() => {
+          const s = startOfWeek(refDate)
+          const e = addDays(s, 6)
+          return `${s.getDate()} – ${e.getDate()} ${MONTH_LABELS[e.getMonth()]}`
+        })()
+
+  const agenda = bookingsOnDate(selectedDate)
+
+  return (
+    <div>
+      <div style={{ padding: '22px 20px 4px' }}>
+        <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 20, color: 'var(--ink)' }}>Calendar</div>
+      </div>
+
+      <div style={{ display: 'flex', padding: '14px 20px 4px' }}>
+        <div style={{ display: 'flex', background: 'var(--tint)', borderRadius: 10, padding: 3 }}>
+          {(['month', 'week'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              style={{ background: mode === m ? '#fff' : 'none', border: 'none', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, color: mode === m ? 'var(--primary)' : 'var(--ink-muted)', cursor: 'pointer', textTransform: 'capitalize' }}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px 6px' }}>
+        <button onClick={goPrev} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
+          <ChevronLeft size={19} />
+        </button>
+        <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{headerLabel}</div>
+        <button onClick={goNext} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
+          <ChevronRight size={19} />
+        </button>
+      </div>
+
+      <div style={{ padding: '8px 16px 0' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}>
+          {WEEKDAY_LETTERS.map((d, i) => (
+            <div key={i} style={{ textAlign: 'center', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 11, color: 'var(--ink-muted)' }}>
+              {d}
+            </div>
+          ))}
+        </div>
+        {weeks.map((weekDates, wi) => (
+          <div key={wi} style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}>
+            {weekDates.map((date) => (
+              <CalendarDayCell
+                key={date.toISOString()}
+                date={date}
+                inMonth={mode === 'week' || date.getMonth() === refDate.getMonth()}
+                isToday={sameDay(date, today)}
+                isSelected={sameDay(date, selectedDate)}
+                bookings={bookingsOnDate(date)}
+                onSelect={setSelectedDate}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ margin: '20px 20px 10px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 13, color: 'var(--ink-muted)' }}>
+        {selectedDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
+      </div>
+      <div style={{ padding: '0 20px' }}>
+        {agenda.length > 0 ? (
+          agenda.map((booking) => <CalendarAgendaCard key={booking.id} booking={booking} onOpen={onOpenJob} />)
+        ) : (
+          <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', padding: '8px 0 20px' }}>Nothing on the schedule this day.</div>
+        )}
+      </div>
+      <div style={{ height: 90 }} />
     </div>
   )
 }
@@ -728,7 +934,7 @@ function ProfileScreen() {
 // Root
 // ---------------------------------------------------------------------------
 
-type TabKey = 'home' | 'availability' | 'profile'
+type TabKey = 'home' | 'calendar' | 'availability' | 'profile'
 
 export function RaltoCrewApp() {
   const [tab, setTab] = useState<TabKey>('home')
@@ -761,6 +967,8 @@ export function RaltoCrewApp() {
     body = <JobDetailScreen job={openJob} onBack={() => setOpenJob(null)} />
   } else if (tab === 'home') {
     body = <HomeScreen bookings={bookings} alerts={alerts} onRespond={handleRespond} onAcknowledge={handleAcknowledge} onOpenJob={setOpenJob} />
+  } else if (tab === 'calendar') {
+    body = <CalendarScreen bookings={bookings} onOpenJob={setOpenJob} />
   } else if (tab === 'availability') {
     body = <AvailabilityScreen />
   } else {
@@ -795,6 +1003,7 @@ export function RaltoCrewApp() {
         {(
           [
             { key: 'home' as const, icon: HomeIcon, label: 'Home' },
+            { key: 'calendar' as const, icon: CalendarIcon, label: 'Calendar' },
             { key: 'availability' as const, icon: CalendarCheck, label: 'Availability' },
             { key: 'profile' as const, icon: User, label: 'Profile' },
           ]
