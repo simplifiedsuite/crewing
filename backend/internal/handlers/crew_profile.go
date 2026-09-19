@@ -123,8 +123,19 @@ func (a *API) SubmitTimesheet(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	bookingID := chi.URLParam(r, "id")
 
+	// Same Pencilled-staff-only ownership gate as GetMyBooking/
+	// GetMyBookingContact — a freelancer shouldn't be able to act on a
+	// booking they're not supposed to know exists just because they
+	// already have its id.
 	var owns bool
-	if err := a.DB.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM bookings WHERE id = $1 AND person_id = $2 AND organisation_id = $3)`, bookingID, claims.PersonID, currentOrgID).Scan(&owns); err != nil {
+	if err := a.DB.QueryRow(r.Context(), `
+		SELECT EXISTS (
+			SELECT 1 FROM bookings b
+			WHERE b.id = $1 AND b.person_id = $2 AND b.organisation_id = $3
+			      AND (b.status != 'pencilled' OR EXISTS (
+			            SELECT 1 FROM people p WHERE p.id = $2 AND p.organisation_id = $3 AND p.employment_type = 'staff'
+			          ))
+		)`, bookingID, claims.PersonID, currentOrgID).Scan(&owns); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to submit timesheet")
 		return
 	}

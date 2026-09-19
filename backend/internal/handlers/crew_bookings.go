@@ -102,10 +102,22 @@ func (a *API) ListMyBookings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bookings)
 }
 
+// GetMyBooking mirrors ListMyBookings' own Pencilled-staff-only guard —
+// not reachable from the current UI (JobDetailScreen only ever opens a
+// booking already returned by ListMyBookings), but a direct API call
+// with a booking id a freelancer happened to already have (e.g. from an
+// Offered notification's link, if that same booking was later re-
+// pencilled) shouldn't be able to read a Pencilled booking's details
+// just because the list-level guard doesn't apply to a single-id lookup.
 func (a *API) GetMyBooking(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	id := chi.URLParam(r, "id")
-	rows, err := a.DB.Query(r.Context(), crewBookingSelect+` WHERE b.id = $1 AND b.person_id = $2 AND b.organisation_id = $3`, id, claims.PersonID, currentOrgID)
+	rows, err := a.DB.Query(r.Context(),
+		crewBookingSelect+` WHERE b.id = $1 AND b.person_id = $2 AND b.organisation_id = $3
+		                     AND (b.status != 'pencilled' OR EXISTS (
+		                           SELECT 1 FROM people p WHERE p.id = $2 AND p.organisation_id = $3 AND p.employment_type = 'staff'
+		                         ))`,
+		id, claims.PersonID, currentOrgID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get booking")
 		return
@@ -186,7 +198,9 @@ func (a *API) RespondToOffer(w http.ResponseWriter, r *http.Request) {
 // member's own booking's Job — JobContact itself is a staff-managed
 // resource (/api/jobs/{id}/contacts), not reachable from a crew session,
 // so this is the narrow, ownership-checked read crew's JobDetail screen
-// actually needs.
+// actually needs. Same Pencilled-staff-only guard as GetMyBooking — a
+// freelancer shouldn't be able to learn a production contact's name/
+// email/phone for a booking they're not supposed to know exists.
 func (a *API) GetMyBookingContact(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	bookingID := chi.URLParam(r, "id")
@@ -199,6 +213,9 @@ func (a *API) GetMyBookingContact(w http.ResponseWriter, r *http.Request) {
 		JOIN job_requirements jr ON jr.job_id = j.id
 		JOIN bookings b ON b.job_requirement_id = jr.id
 		WHERE b.id = $1 AND b.person_id = $2 AND b.organisation_id = $3
+		      AND (b.status != 'pencilled' OR EXISTS (
+		            SELECT 1 FROM people p WHERE p.id = $2 AND p.organisation_id = $3 AND p.employment_type = 'staff'
+		          ))
 		ORDER BY jc.name
 		LIMIT 1`,
 		bookingID, claims.PersonID, currentOrgID,

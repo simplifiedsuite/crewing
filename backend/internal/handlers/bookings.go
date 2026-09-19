@@ -429,10 +429,31 @@ func (a *API) ConfirmBooking(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, b)
 }
 
+// CancelBooking notifies the person unless the booking was still just a
+// Pencil — a Pencil never notified anyone when it was created (see
+// CreateBooking's own comment: it's a soft hold, not a formal ask, so
+// nothing digital happened for the person to be told about), and that
+// has to hold on the way out too, or this becomes the one path that
+// quietly reveals a Pencil's existence, undermining the crew app/iCal
+// feed's own Pencilled-staff-only guard. Captured before the UPDATE
+// since RETURNING only ever gives the new (cancelled) status, never the
+// old one.
 func (a *API) CancelBooking(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	var previousStatus models.BookingStatus
+	err := a.DB.QueryRow(r.Context(), `SELECT status FROM bookings WHERE id = $1 AND organisation_id = $2`, id, currentOrgID).Scan(&previousStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel booking")
+		return
+	}
+
 	var b models.Booking
-	err := a.DB.QueryRow(r.Context(),
+	err = a.DB.QueryRow(r.Context(),
 		`UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND organisation_id = $2
 		 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
 		id, currentOrgID,
@@ -447,11 +468,13 @@ func (a *API) CancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
-	if ctxErr == nil {
-		subject, body := notify.RenderBookingCancelled(ctx.RoleName, ctx.JobName, ctx.DatesText)
-		_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingCancelled,
-			map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+	if previousStatus != models.BookingStatusPencilled {
+		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
+		if ctxErr == nil {
+			subject, body := notify.RenderBookingCancelled(ctx.RoleName, ctx.JobName, ctx.DatesText)
+			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingCancelled,
+				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, b)
