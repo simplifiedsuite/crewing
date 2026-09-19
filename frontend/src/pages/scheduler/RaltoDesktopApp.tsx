@@ -2062,7 +2062,11 @@ function FoundJobPanel({ job, onUse }: { job: CoreJob; onUse: (job: CoreJob) => 
     }
   }
 
-  const dateRange = current.date_start ? `${current.date_start}${current.date_end && current.date_end !== current.date_start ? ` – ${current.date_end}` : ''}` : undefined
+  const dateRange = current.date_start
+    ? current.date_end && current.date_end !== current.date_start
+      ? `${formatDate(current.date_start)} – ${formatDate(current.date_end)}`
+      : formatDate(current.date_start)
+    : undefined
 
   return (
     <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>

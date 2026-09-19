@@ -27,7 +27,7 @@ import {
   Settings,
 } from 'lucide-react'
 import { api } from '../../lib/api'
-import { formatDate } from '../../lib/format'
+import { formatDate, formatDateRange } from '../../lib/format'
 import { useStaffAuth } from '../../context/StaffAuthContext'
 import {
   useAlerts,
@@ -654,7 +654,7 @@ function JobRow({ summary, client, fallbackIndex, onOpen }: { summary: JobSummar
           </span>
         </div>
         <div style={{ fontFamily: 'var(--font-body)', fontSize: 12.5, color: 'var(--ink-muted)', marginTop: 2 }}>
-          {summary.job.start_date} – {summary.job.end_date}
+          {formatDateRange(summary.job.start_date, summary.job.end_date)}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
           <div style={{ flex: 1, height: 5, borderRadius: 999, background: 'var(--track)', overflow: 'hidden' }}>
@@ -720,7 +720,7 @@ function JobOverview({ summary, client, venueName, contact, onBack, onOpenRole }
         </div>
       </div>
       <div style={{ height: 1, background: 'var(--line)', margin: '0 20px' }} />
-      <Row icon={CalendarDays} label="Dates" value={`${summary.job.start_date} – ${summary.job.end_date}`} />
+      <Row icon={CalendarDays} label="Dates" value={formatDateRange(summary.job.start_date, summary.job.end_date)} />
       <div style={{ height: 1, background: 'var(--line)', margin: '0 20px' }} />
       <Row icon={MapPin} label="Venue" value={venueName} />
       <div style={{ height: 1, background: 'var(--line)', margin: '0 20px' }} />
@@ -952,7 +952,7 @@ function PlannerContent({ summaries, clients, people, selectedJobId, onSelectJob
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 21, color: 'var(--ink)' }}>{summary.job.name}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: clientColor(clients[summary.job.client_id], 0), flexShrink: 0 }} />
-          <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>{summary.job.start_date} – {summary.job.end_date}</span>
+          <span style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>{formatDateRange(summary.job.start_date, summary.job.end_date)}</span>
         </div>
       </div>
 
