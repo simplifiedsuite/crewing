@@ -130,18 +130,22 @@ def feed(token: str):
                 )
 
             # Holiday/TOIL only — see ical_feed.AvailabilityBlock's own
-            # docstring for why the type filter alone (no employment_type
-            # guard) is the right scope: Sick/Other/Bank Holiday and plain
-            # blanket Unavailable (the common freelancer entry, always
-            # type IS NULL) stay excluded, same as before this feature.
+            # docstring. Sick/Other/Bank Holiday and plain blanket Unavailable
+            # (the common freelancer entry, always type IS NULL) stay excluded
+            # by the type filter. The employment_type = 'staff' guard is a
+            # second, independent gate: Holiday/TOIL is staff-only by policy,
+            # and nothing elsewhere stops one being set on a freelancer, so
+            # this feed fails safe (drops it) rather than fails open.
             # status = 'unavailable' is redundant with the type filter in
             # practice (CreateAvailability nulls type on any other status)
             # but kept explicit rather than relying on that invariant.
             cur.execute(
                 """
-                SELECT id, start_date, end_date, type, day_portion
-                FROM availability
-                WHERE person_id = %s AND status = 'unavailable' AND type IN ('annual_leave', 'toil')
+                SELECT a.id, a.start_date, a.end_date, a.type, a.day_portion
+                FROM availability a
+                JOIN people p ON p.id = a.person_id
+                WHERE a.person_id = %s AND a.status = 'unavailable' AND a.type IN ('annual_leave', 'toil')
+                      AND p.employment_type = 'staff'
                 """,
                 (person_row["id"],),
             )
@@ -232,10 +236,10 @@ def dakboard_feed(token: str):
                     )
                 )
 
-            # Holiday/TOIL, org-wide — same type scope as the per-person
-            # feed (see AvailabilityBlock's docstring), attributed to each
-            # person by name since this feed isn't implicitly "whose
-            # calendar" the way the per-person one is.
+            # Holiday/TOIL, org-wide — same type scope and staff-only guard
+            # as the per-person feed (see AvailabilityBlock's docstring),
+            # attributed to each person by name since this feed isn't
+            # implicitly "whose calendar" the way the per-person one is.
             cur.execute(
                 """
                 SELECT a.id, a.start_date, a.end_date, a.type, a.day_portion,
@@ -243,6 +247,7 @@ def dakboard_feed(token: str):
                 FROM availability a
                 JOIN people p ON p.id = a.person_id
                 WHERE a.organisation_id = %s AND a.status = 'unavailable' AND a.type IN ('annual_leave', 'toil')
+                      AND p.employment_type = 'staff'
                 ORDER BY a.start_date
                 """,
                 (organisation_id,),

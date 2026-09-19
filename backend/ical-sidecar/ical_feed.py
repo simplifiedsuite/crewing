@@ -102,16 +102,16 @@ class AvailabilityBlock:
     """A Holiday or TOIL Availability entry — the only two Availability.type
     values either feed renders (see AVAILABILITY_ICS_LABEL below). Everything
     else (Sick, Other, Bank Holiday, and untyped/generic Unavailable — the
-    common freelancer "blocked out" entry) stays excluded from both feeds,
-    same as before this feature: the concern that originally kept Availability
-    out of the feed entirely was freelancer noise from blanket unavailability,
-    and that concern doesn't apply to a specifically-typed Holiday/TOIL entry
-    regardless of whether the person happens to be staff or a freelancer —
-    confirmed directly against production data that nothing in the backend or
-    frontend actually restricts these two types to staff (CreateAvailability
-    has no employment_type check, and AddAvailabilityForm's Reason dropdown
-    offers them to every person), so the type filter alone is the correct and
-    sufficient gate, not an additional person-type guard.
+    common freelancer "blocked out" entry) stays excluded from both feeds.
+    Holiday/TOIL is additionally a staff-only concept as a matter of policy —
+    freelancers never have these shown on their calendar, full stop — even
+    though nothing in the backend or frontend actually stops one being set on
+    a freelancer's record (CreateAvailability has no employment_type check,
+    and AddAvailabilityForm's Reason dropdown offers them to every person).
+    Since that's a data-entry gap rather than an intentional allowance, the
+    feed queries (main.py) apply an explicit `people.employment_type = 'staff'`
+    guard alongside the type filter, so a stray freelancer entry fails safe
+    (silently absent) instead of fails open (rendered as if normal).
     person_name is only used by the Dakboard rendering path (per-person feed
     already knows whose calendar it is; the shared Dakboard feed doesn't)."""
 
