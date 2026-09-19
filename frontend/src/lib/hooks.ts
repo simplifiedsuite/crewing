@@ -560,6 +560,31 @@ export function confirmBooking(id: string) {
   return api.post<Booking>(`/bookings/${id}/confirm`)
 }
 
+// usePerson — a single Person by id, for a call site that only has a
+// personId in scope (e.g. Planner's declined-follow-up) and needs a field
+// like employment_type that isn't worth threading through as a prop from
+// every caller. Skips the fetch entirely when personId is undefined, same
+// as useAvailability.
+export function usePerson(personId: string | undefined) {
+  const [data, setData] = useState<Person | undefined>(undefined)
+  const [loading, setLoading] = useState(true)
+
+  const reload = useCallback(() => {
+    if (!personId) return Promise.resolve()
+    setLoading(true)
+    return api
+      .get<Person>(`/people/${personId}`)
+      .then(setData)
+      .finally(() => setLoading(false))
+  }, [personId])
+
+  useEffect(() => {
+    reload()
+  }, [reload])
+
+  return { data, loading, reload }
+}
+
 export function useAvailability(personId: string | undefined) {
   const [data, setData] = useState<Availability[]>([])
   const [loading, setLoading] = useState(true)

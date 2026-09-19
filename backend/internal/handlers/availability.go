@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 
 	"ralto/internal/models"
 )
@@ -64,6 +66,29 @@ func (a *API) CreateAvailability(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DayPortion == "" {
 		req.DayPortion = models.AvailabilityDayPortionFull
+	}
+
+	// Holiday/TOIL is staff-only by policy — see the iCal feed's own
+	// employment_type guard (ical-sidecar/main.py), which this mirrors on
+	// the write side: AddAvailabilityForm's Reason dropdown already hides
+	// these two for a freelancer, but that's UI-only and bypassable via a
+	// direct API call, so it's enforced here too, as an explicit rejection
+	// rather than a silent downgrade to untyped Unavailable.
+	if req.Type != nil && (*req.Type == models.AvailabilityTypeAnnualLeave || *req.Type == models.AvailabilityTypeToil) {
+		var employmentType models.EmploymentType
+		err := a.DB.QueryRow(r.Context(), `SELECT employment_type FROM people WHERE id = $1 AND organisation_id = $2`, personID, currentOrgID).Scan(&employmentType)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "person not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create availability entry")
+			return
+		}
+		if employmentType != models.EmploymentTypeStaff {
+			writeError(w, http.StatusUnprocessableEntity, "annual_leave and toil can only be set for staff")
+			return
+		}
 	}
 	var av models.Availability
 	err := a.DB.QueryRow(r.Context(),

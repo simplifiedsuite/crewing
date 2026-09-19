@@ -44,6 +44,7 @@ import {
   useVenues,
   useJobSummaries,
   usePeople,
+  usePerson,
   useCandidates,
   useAvailability,
   createAvailability,
@@ -5265,6 +5266,13 @@ const AVAILABILITY_TYPE_LABEL: Record<AvailabilityType, string> = {
   other: 'Other',
 }
 
+// Holiday/TOIL is staff-only by policy (see CreateAvailability's own
+// employment_type check, which this mirrors) — a freelancer never gets
+// these as Reason options in the first place, rather than being allowed to
+// pick them and then rejected on submit.
+const STAFF_ONLY_AVAILABILITY_TYPES = new Set<AvailabilityType>(['annual_leave', 'toil'])
+const ALL_AVAILABILITY_TYPES: AvailabilityType[] = ['annual_leave', 'sick', 'toil', 'bank_holiday', 'other']
+
 const AVAILABILITY_STATUS_LABEL: Record<AvailabilityStatus, string> = {
   available: 'Available',
   unavailable: 'Unavailable',
@@ -5302,12 +5310,18 @@ function AvailabilityRow({ entry, onDelete }: { entry: Availability; onDelete: (
 
 function AddAvailabilityForm({
   personId,
+  // The PersonDetail call site already has the full Person in hand and can
+  // pass its employment_type directly; the Planner declined-follow-up call
+  // site only has a personId, so falls back to fetching it (see usePerson
+  // below). Either way, the Reason dropdown never has to guess.
+  employmentType,
   initialStartDate,
   initialEndDate,
   onSaved,
   onCancel,
 }: {
   personId: string
+  employmentType?: EmploymentType
   // Planner's "Not available" follow-up defaults this to the requirement's
   // own dates rather than today, since the whole point there is "mark them
   // unavailable for (at least) the dates just declined" — still editable,
@@ -5328,6 +5342,27 @@ function AddAvailabilityForm({
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
+
+  // Only fetch when the caller didn't already have employment_type on
+  // hand — usePerson no-ops on an undefined id.
+  const { data: fetchedPerson } = usePerson(employmentType ? undefined : personId)
+  const resolvedEmploymentType = employmentType ?? fetchedPerson?.employment_type
+
+  // Fails closed while employment_type is still unknown (neither passed in
+  // nor loaded yet) — Holiday/TOIL only ever appear once we can positively
+  // confirm the person is staff, never as a default.
+  const reasonOptions = ALL_AVAILABILITY_TYPES.filter(
+    (t) => resolvedEmploymentType === 'staff' || !STAFF_ONLY_AVAILABILITY_TYPES.has(t)
+  )
+
+  // Defensive reset: if the selected Reason ever falls outside what's
+  // currently offered (employment_type resolves to freelancer after a
+  // staff-only value was picked in the fail-closed window above), clear it
+  // rather than silently submitting a stale selection.
+  useEffect(() => {
+    if (type && !reasonOptions.includes(type)) setType('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedEmploymentType])
 
   const inputStyle = { border: '1px solid var(--line)', borderRadius: 8, padding: '7px 10px', fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink)', background: '#fff' }
 
@@ -5375,11 +5410,11 @@ function AddAvailabilityForm({
             <span style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }}>Reason</span>
             <select value={type} onChange={(e) => setType(e.target.value as AvailabilityType | '')} style={inputStyle}>
               <option value="">Unspecified</option>
-              <option value="annual_leave">Holiday</option>
-              <option value="sick">Sick</option>
-              <option value="toil">TOIL</option>
-              <option value="bank_holiday">Bank Holiday</option>
-              <option value="other">Other</option>
+              {reasonOptions.map((t) => (
+                <option key={t} value={t}>
+                  {AVAILABILITY_TYPE_LABEL[t]}
+                </option>
+              ))}
             </select>
           </label>
         )}
@@ -5436,6 +5471,7 @@ function PersonAvailabilityTab({ person }: { person: Person }) {
         <div style={{ marginBottom: 14 }}>
           <AddAvailabilityForm
             personId={person.id}
+            employmentType={person.employment_type}
             onCancel={() => setAdding(false)}
             onSaved={() => {
               setAdding(false)
