@@ -308,6 +308,10 @@ export interface CrewBooking extends Booking {
   role_name: string
   job_name: string
   client_name: string
+  // client_color_hex — the Client's own brand_color_hex, absent when
+  // unset. Same field desktop's Planner already reads for its own
+  // client-colour stripe (see clientColor in RaltoDesktopApp.tsx).
+  client_color_hex?: string
   venue_name?: string
   job_start_date: string
   job_end_date: string

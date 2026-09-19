@@ -15,20 +15,28 @@ import (
 // crewBookingResponse flattens in job/venue/client display fields so the
 // crew mobile app's Home/JobDetail screens don't need N+1 lookups —
 // mirrors the ralto-crew-mobile.jsx mock shape (NEXT_JOB, UPCOMING).
+//
+// ClientColorHex — testing feedback: the crew app never got the client-
+// colour treatment desktop's Planner already has (a stripe/border,
+// separate from the status icon/colour so the two channels never
+// collide — see desktop's own clientColor/FALLBACK_CLIENT_COLORS). Nil
+// when the Client has no brand_color_hex set; the frontend falls back to
+// the same default indigo it already uses everywhere.
 type crewBookingResponse struct {
 	models.Booking
-	RoleName    string  `json:"role_name"`
-	JobName     string  `json:"job_name"`
-	ClientName  string  `json:"client_name"`
-	VenueName   *string `json:"venue_name,omitempty"`
-	JobStartDate string `json:"job_start_date"`
-	JobEndDate   string `json:"job_end_date"`
+	RoleName       string  `json:"role_name"`
+	JobName        string  `json:"job_name"`
+	ClientName     string  `json:"client_name"`
+	ClientColorHex *string `json:"client_color_hex,omitempty"`
+	VenueName      *string `json:"venue_name,omitempty"`
+	JobStartDate   string  `json:"job_start_date"`
+	JobEndDate     string  `json:"job_end_date"`
 }
 
 const crewBookingSelect = `
 	SELECT b.id, b.job_requirement_id, b.person_id, b.status, b.start_date, b.end_date, b.call_time,
 	       b.rate_override, b.offered_at, b.responded_at, b.confirmed_at, b.notes,
-	       ro.name, j.name, c.name, v.name, j.start_date, j.end_date
+	       ro.name, j.name, c.name, c.brand_color_hex, v.name, j.start_date, j.end_date
 	FROM bookings b
 	JOIN job_requirements jr ON jr.id = b.job_requirement_id
 	JOIN jobs j ON j.id = jr.job_id
@@ -40,7 +48,7 @@ const crewBookingSelect = `
 func scanCrewBooking(rows pgx.Rows, b *crewBookingResponse) error {
 	return rows.Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
 		&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes,
-		&b.RoleName, &b.JobName, &b.ClientName, &b.VenueName, &b.JobStartDate, &b.JobEndDate)
+		&b.RoleName, &b.JobName, &b.ClientName, &b.ClientColorHex, &b.VenueName, &b.JobStartDate, &b.JobEndDate)
 }
 
 // ListMyBookings returns everything except declined/cancelled — the crew

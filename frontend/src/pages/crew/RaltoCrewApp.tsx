@@ -20,6 +20,23 @@ import type { AvailabilityRequest, AvailabilityResponseValue, CrewBooking, JobCo
 // where they actually belong — they're per-person, not per-job.
 // ---------------------------------------------------------------------------
 
+// Testing feedback — desktop's Planner already gives each booking a
+// client-colour stripe, kept deliberately separate from status (which
+// uses an icon/colour of its own, never hue) so the two channels can
+// never collide — see clientColor/FALLBACK_CLIENT_COLORS in
+// RaltoDesktopApp.tsx. The crew app predates that and never got it; this
+// mirrors the same positional-stripe pattern rather than inventing a new
+// one for mobile. Unlike desktop's Planner (many different jobs shown
+// side by side, so an index-cycling fallback palette earns its keep),
+// a single crew member's own booking list is short and mostly real
+// clients with real colours already set — a plain default indigo
+// fallback (the same colour every card already used before this) is
+// simpler and sufficient here.
+const DEFAULT_CLIENT_COLOR = '#453E96'
+function clientStripeColor(colorHex: string | undefined): string {
+  return colorHex || DEFAULT_CLIENT_COLOR
+}
+
 const statusStyle: Record<string, { color: string; bg: string; label: string; Icon: typeof CheckCircle2 }> = {
   confirmed: { color: 'var(--success)', bg: 'var(--success-bg)', label: 'Confirmed', Icon: CheckCircle2 },
   offered: { color: 'var(--attention)', bg: 'var(--attention-bg)', label: 'Awaiting response', Icon: Clock },
@@ -100,7 +117,7 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
       {nextJob && (
         <div style={{ padding: '0 20px 20px' }}>
           <div style={{ position: 'relative', border: '1px solid var(--line)', borderRadius: 16, padding: '18px 18px 18px 24px', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, background: 'var(--primary)' }} />
+            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, background: clientStripeColor(nextJob.client_color_hex) }} />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 8 }}>Next job</div>
@@ -216,7 +233,7 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
           const StatusIcon = s.Icon
           return (
             <div key={job.id} style={{ position: 'relative', border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '12px 14px 12px 18px', overflow: 'hidden', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: 'var(--primary)' }} />
+              <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientStripeColor(job.client_color_hex) }} />
               <div>
                 <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{job.job_name}</div>
                 <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>
