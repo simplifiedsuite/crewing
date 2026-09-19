@@ -247,7 +247,11 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
           const s = statusStyle[job.status] ?? statusStyle.confirmed
           const StatusIcon = s.Icon
           return (
-            <div key={job.id} style={{ position: 'relative', border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '12px 14px 12px 18px', overflow: 'hidden', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <button
+              key={job.id}
+              onClick={() => onOpenJob(job)}
+              style={{ position: 'relative', width: '100%', textAlign: 'left', border: '1px solid var(--line)', borderRadius: 12, background: '#fff', padding: '12px 14px 12px 18px', overflow: 'hidden', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+            >
               <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: clientStripeColor(job.client_color_hex) }} />
               <div>
                 <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{job.job_name}</div>
@@ -258,7 +262,7 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
               <div style={{ flexShrink: 0, width: 24, height: 24, borderRadius: '50%', background: s.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <StatusIcon size={13} color={s.color} strokeWidth={2.5} />
               </div>
-            </div>
+            </button>
           )
         })}
       </div>
