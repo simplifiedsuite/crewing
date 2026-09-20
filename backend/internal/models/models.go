@@ -288,6 +288,12 @@ type PersonRole struct {
 	PersonID  string `json:"person_id"`
 	RoleID    string `json:"role_id"`
 	IsPrimary bool   `json:"is_primary"`
+	// Rate — Addendum v3 §4. Standing per-role rate override (e.g. a higher
+	// rate when someone's booked into a secondary role). The resolution
+	// chain this feeds (Booking.RateOverride -> PersonRole.Rate ->
+	// Person.StandardRate) is later, buyout-generation-stage work — this is
+	// just the field.
+	Rate *float64 `json:"rate,omitempty"`
 }
 
 // --- Skill / Certification ---
@@ -365,19 +371,34 @@ const (
 	BookingStatusComplete    BookingStatus = "complete"
 )
 
+// BookingResponseChannel — Addendum v3 §2. Distinguishes a freelancer's own
+// self-service response (once that flow exists) from a scheduler recording
+// a response on someone's behalf. Null until a response is actually
+// recorded; the write path that sets it is later work, not this stage.
+type BookingResponseChannel string
+
+const (
+	BookingResponseChannelSelfService     BookingResponseChannel = "self_service"
+	BookingResponseChannelSchedulerManual BookingResponseChannel = "scheduler_manual"
+)
+
 type Booking struct {
-	ID               string        `json:"id"`
-	JobRequirementID string        `json:"job_requirement_id"`
-	PersonID         string        `json:"person_id"`
-	Status           BookingStatus `json:"status"`
-	StartDate        string        `json:"start_date"`
-	EndDate          string        `json:"end_date"`
-	CallTime         *string       `json:"call_time,omitempty"`
-	RateOverride     *float64      `json:"rate_override,omitempty"`
-	OfferedAt        time.Time     `json:"offered_at"`
-	RespondedAt      *time.Time    `json:"responded_at,omitempty"`
-	ConfirmedAt      *time.Time    `json:"confirmed_at,omitempty"`
-	Notes            *string       `json:"notes,omitempty"`
+	ID               string                  `json:"id"`
+	JobRequirementID string                  `json:"job_requirement_id"`
+	PersonID         string                  `json:"person_id"`
+	Status           BookingStatus           `json:"status"`
+	StartDate        string                  `json:"start_date"`
+	EndDate          string                  `json:"end_date"`
+	CallTime         *string                 `json:"call_time,omitempty"`
+	RateOverride     *float64                `json:"rate_override,omitempty"`
+	OfferedAt        time.Time               `json:"offered_at"`
+	RespondedAt      *time.Time              `json:"responded_at,omitempty"`
+	ConfirmedAt      *time.Time              `json:"confirmed_at,omitempty"`
+	Notes            *string                 `json:"notes,omitempty"`
+	ResponseChannel  *BookingResponseChannel `json:"response_channel,omitempty"`
+	// ConfirmedBy — populated when a scheduler presses Confirm (Addendum v3
+	// §2). The write path is later work; this is just the field.
+	ConfirmedBy *string `json:"confirmed_by,omitempty"`
 }
 
 type BookingShift struct {
@@ -497,6 +518,11 @@ const (
 	NotificationTypeBookingCancelled    NotificationType = "booking_cancelled"
 	NotificationTypeShiftReminder       NotificationType = "shift_reminder"
 	NotificationTypeAvailabilityRequest NotificationType = "availability_request"
+	// NotificationTypeBookingPencilled — Addendum v3's freelancer
+	// offer/pencil/confirm flow. The trigger that actually creates
+	// Notification rows of this type is later work (not this stage) — this
+	// is the value, matching the DB enum (migrations/0024_addendum_v3_schema.sql).
+	NotificationTypeBookingPencilled NotificationType = "booking_pencilled"
 )
 
 type Notification struct {
@@ -530,6 +556,34 @@ type NotificationDelivery struct {
 	Channel        NotificationChannel        `json:"channel"`
 	Status         NotificationDeliveryStatus `json:"status"`
 	SentAt         *time.Time                 `json:"sent_at,omitempty"`
+}
+
+// --- OrgBuyoutSettings (Addendum v3 §5) ---
+//
+// One row per organisation, mirroring org_settings' shape
+// (migrations/0011_calendar_feeds.sql) rather than a new org-scoped-
+// settings pattern. Every field but OrganisationID is nullable/omitempty:
+// most orgs won't have a populated row at all yet (today, every org
+// except LDM.tv — see migrations/0025_ldm_buyout_settings_seed.sql), and
+// callers must treat "no row" and "row with nulls" as equally normal, not
+// exceptional. The buyout-PDF generation this feeds is later work — this
+// stage is the schema and struct only.
+type OrgBuyoutSettings struct {
+	ID                      string    `json:"id"`
+	OrganisationID          string    `json:"organisation_id"`
+	CompanyLegalName        *string   `json:"company_legal_name,omitempty"`
+	BillingAddress          *string   `json:"billing_address,omitempty"`
+	InvoiceEmail            *string   `json:"invoice_email,omitempty"`
+	AccountsEmail           *string   `json:"accounts_email,omitempty"`
+	OperationsEmail         *string   `json:"operations_email,omitempty"`
+	RateQueryContactName    *string   `json:"rate_query_contact_name,omitempty"`
+	RateQueryContactEmail   *string   `json:"rate_query_contact_email,omitempty"`
+	AccidentReportURL       *string   `json:"accident_report_url,omitempty"`
+	PaymentTermsDays        *int      `json:"payment_terms_days,omitempty"`
+	InvoiceWindowDays       *int      `json:"invoice_window_days,omitempty"`
+	CancellationNoticeHours *int      `json:"cancellation_notice_hours,omitempty"`
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 // --- OperationalAlert (Today screen's "Needs attention") ---
