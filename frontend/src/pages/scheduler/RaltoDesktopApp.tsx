@@ -966,7 +966,7 @@ function CalendarContent({
   // means AddProspectiveEventForm falls back to its own today() default.
   const [eventPrefillDate, setEventPrefillDate] = useState<string | undefined>(undefined)
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>(undefined)
-  const { data: prospectiveEvents, reload: reloadEvents } = useProspectiveEvents()
+  const { data: prospectiveEvents, loading: eventsLoading, reload: reloadEvents } = useProspectiveEvents()
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const todayRowRef = useRef<HTMLDivElement>(null)
@@ -1075,22 +1075,24 @@ function CalendarContent({
 
   // Lands on today by default — the initial render starts
   // CALENDAR_INITIAL_RADIUS_WEEKS weeks before today, not at today itself.
-  // Bug fix — found live-testing: summaries load asynchronously (fetched
-  // once at the app root), so on first mount every WeekRow above today
-  // renders with no job bars yet, much shorter than it will be a moment
-  // later. Scrolling on the very first render (empty-deps effect) landed
-  // part-way into the *next* month once those bars actually appeared and
-  // pushed everything below them down — no compensation catches this,
-  // since it's a data-arrival reflow, not a range-expansion prepend. Only
-  // auto-scrolling once real data has actually arrived (and only the one
-  // time, via the ref guard) fixes it without re-fighting the scheduler's
-  // own later scrolling.
+  // Bug fix — found live-testing: summaries and prospective events both
+  // load asynchronously (summaries fetched once at the app root,
+  // prospectiveEvents by this component's own hook above) — on first
+  // mount, every WeekRow above today renders with no job bars or
+  // prospective-event bands yet, shorter than it will be a moment later.
+  // Scrolling too early (an empty-deps effect, or one keyed only on
+  // calendarJobs and not also on prospectiveEvents) landed past today once
+  // whichever loaded second pushed rows above it taller — no compensation
+  // catches this, since it's a data-arrival reflow, not a range-expansion
+  // prepend. Waiting for both, and only auto-scrolling the one time (via
+  // the ref guard), fixes it without re-fighting the scheduler's own later
+  // scrolling.
   const hasAutoScrolledRef = useRef(false)
   useEffect(() => {
-    if (hasAutoScrolledRef.current || calendarJobs.length === 0) return
+    if (hasAutoScrolledRef.current || calendarJobs.length === 0 || eventsLoading) return
     hasAutoScrolledRef.current = true
     todayRowRef.current?.scrollIntoView({ block: 'start' })
-  }, [calendarJobs])
+  }, [calendarJobs, eventsLoading])
 
   function goToday() {
     todayRowRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
