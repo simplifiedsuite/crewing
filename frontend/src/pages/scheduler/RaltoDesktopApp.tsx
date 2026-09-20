@@ -4849,7 +4849,6 @@ function ResourceCalendarContent({
   }, [rangeStart, rangeEnd])
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const todayColRef = useRef<HTMLDivElement>(null)
   const scrollWidthBeforeRef = useRef(0)
   const pendingCompensationRef = useRef(false)
   // Same runaway-chain guard as Calendar's own (CC) — see that component's
@@ -4935,13 +4934,24 @@ function ResourceCalendarContent({
     scrollToToday()
   }, [loading])
 
-  // Instant, not smooth — see Calendar's own scrollToToday for why: the
-  // suppression window only reliably covers a couple of frames, and a
-  // smooth scroll runs for several hundred ms, so smooth would release the
-  // guard mid-animation and reopen the exact bug this closes.
+  // Bug fix — found live-testing: scrollIntoView on todayColRef silently
+  // did nothing, repeatably, including called manually on the actual DOM
+  // node in isolation. The date header cells (todayColRef included) are
+  // position:sticky;top:0 for the vertical axis, and browsers appear to
+  // treat a sticky element as already "in view" for scrollIntoView's own
+  // purposes even along the horizontal axis it isn't stuck on, which
+  // short-circuits the scroll entirely. Computing the target scrollLeft
+  // directly (today's index into `dates` times the current column width)
+  // sidesteps that quirk altogether, and is more precise anyway — no ref
+  // needed at all. Instant, not smooth, same reasoning as Calendar's own
+  // scrollToToday: the suppression window below only reliably covers a
+  // couple of frames.
   function scrollToToday() {
+    const el = scrollRef.current
+    const todayIndex = dates.findIndex((d) => dateISO(d) === todayISOString)
+    if (!el || todayIndex === -1) return
     suppressScrollHandlingRef.current = true
-    todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest' })
+    el.scrollLeft = todayIndex * colWidth
     // Same reasoning as Calendar's own scrollToToday: handleScroll (which
     // normally keeps visibleMonthLabel in sync) is suppressed for the
     // duration of this jump, so it never fires to update the label here.
@@ -5031,7 +5041,6 @@ function ResourceCalendarContent({
             return (
               <div
                 key={iso}
-                ref={isToday ? todayColRef : undefined}
                 title={inEvent ? `${inEvent.name} (prospective) — click to convert to a job` : undefined}
                 onClick={inEvent ? () => onConvertEvent(inEvent) : undefined}
                 style={{
