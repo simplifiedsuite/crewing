@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import type {
   Availability,
@@ -27,6 +27,7 @@ import type {
   Project,
   ProspectiveEvent,
   ResourceCalendarResponse,
+  ResourceCalendarRow,
   Role,
   ScheduleItHistory,
   Skill,
@@ -415,31 +416,137 @@ export function dropProspectiveEvent(id: string) {
   return api.post(`/prospective-events/${id}/drop`)
 }
 
-// useResourceCalendar — the "people down, dates across" read model
-// (addendum v2 §1). includeIds is session state the caller owns (a
-// scheduler searching in a specific freelancer to check against the
-// grid) — not persisted, so it's just re-sent on every request.
-export function useResourceCalendar(startDate: string, endDate: string, includeIds: string[]) {
-  const [data, setData] = useState<ResourceCalendarResponse | undefined>(undefined)
+function shiftISODate(iso: string, days: number): string {
+  const d = new Date(iso + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function fetchResourceCalendarRange(start: string, end: string, includeKey: string) {
+  const params = new URLSearchParams({ start, end })
+  if (includeKey) params.set('include', includeKey)
+  return api.get<ResourceCalendarResponse>(`/resource-calendar?${params.toString()}`)
+}
+
+// useResourceCalendarWindow — the "people down, dates across" read model
+// (addendum v2 §1), rebuilt for the Team view's continuous-scroll redesign
+// (DD). Replaces the old useResourceCalendar's single fixed start/end
+// fetch: the Team view now grows its visible date range as the scheduler
+// scrolls, and this hook grows the *loaded* range to match without ever
+// re-fetching a date already in hand — expandStart/expandEnd each request
+// only the newly-exposed slice and merge it (by booking/availability id)
+// into what's already loaded. That's what keeps "scrolling shouldn't load
+// an unreasonable chunk at once" true regardless of how far someone
+// scrolls in one sitting, rather than just picking a bigger fixed window
+// and calling it done.
+export function useResourceCalendarWindow(initialStart: string, initialEnd: string, includeIds: string[]) {
+  const [rangeStart, setRangeStart] = useState(initialStart)
+  const [rangeEnd, setRangeEnd] = useState(initialEnd)
+  const [rowsByPerson, setRowsByPerson] = useState<Map<string, ResourceCalendarRow>>(new Map())
+  const [events, setEvents] = useState<ProspectiveEvent[]>([])
   const [loading, setLoading] = useState(true)
   const includeKey = includeIds.join(',')
+  // Guards a stale in-flight fetch (e.g. a slow expandStart response)
+  // landing after a newer reset (includeIds changed) has already replaced
+  // the whole window — bumped on every reset, checked before merging.
+  const generationRef = useRef(0)
 
-  const reload = useCallback(() => {
+  function mergeResponse(resp: ResourceCalendarResponse) {
+    setRowsByPerson((prev) => {
+      const next = new Map(prev)
+      for (const row of resp.rows) {
+        const existing = next.get(row.person_id)
+        if (!existing) {
+          next.set(row.person_id, row)
+          continue
+        }
+        const bookingIds = new Set(existing.bookings.map((b) => b.id))
+        const availabilityIds = new Set(existing.availability.map((a) => a.id))
+        next.set(row.person_id, {
+          ...existing,
+          bookings: [...existing.bookings, ...row.bookings.filter((b) => !bookingIds.has(b.id))],
+          availability: [...existing.availability, ...row.availability.filter((a) => !availabilityIds.has(a.id))],
+        })
+      }
+      return next
+    })
+    setEvents((prev) => {
+      const ids = new Set(prev.map((e) => e.id))
+      return [...prev, ...resp.prospective_events.filter((e) => !ids.has(e.id))]
+    })
+  }
+
+  // Full reset — mount, or includeIds changed (a newly-added freelancer's
+  // existing bookings outside the currently-loaded window need a real
+  // fetch, not a merge, since nothing about them is cached yet).
+  const resetTo = useCallback((start: string, end: string) => {
+    const generation = ++generationRef.current
     setLoading(true)
-    const params = new URLSearchParams({ start: startDate, end: endDate })
-    if (includeKey) params.set('include', includeKey)
-    return api
-      .get<ResourceCalendarResponse>(`/resource-calendar?${params.toString()}`)
-      .then(setData)
-      .finally(() => setLoading(false))
+    setRangeStart(start)
+    setRangeEnd(end)
+    return fetchResourceCalendarRange(start, end, includeKey)
+      .then((resp) => {
+        if (generation !== generationRef.current) return
+        setRowsByPerson(new Map(resp.rows.map((r) => [r.person_id, r])))
+        setEvents(resp.prospective_events)
+      })
+      .finally(() => {
+        if (generation === generationRef.current) setLoading(false)
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startDate, endDate, includeKey])
+  }, [includeKey])
 
   useEffect(() => {
-    reload()
-  }, [reload])
+    resetTo(initialStart, initialEnd)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includeKey])
 
-  return { data, loading, reload }
+  // expandStart/expandEnd — the scroll-edge handlers call these with the
+  // new, wider boundary; only the newly-exposed slice (old boundary to new
+  // boundary) is actually requested.
+  const expandStart = useCallback(
+    (newStart: string) => {
+      if (newStart >= rangeStart) return
+      const sliceEnd = shiftISODate(rangeStart, -1)
+      const generation = generationRef.current
+      setRangeStart(newStart)
+      fetchResourceCalendarRange(newStart, sliceEnd, includeKey).then((resp) => {
+        if (generation === generationRef.current) mergeResponse(resp)
+      })
+    },
+    [rangeStart, includeKey],
+  )
+  const expandEnd = useCallback(
+    (newEnd: string) => {
+      if (newEnd <= rangeEnd) return
+      const sliceStart = shiftISODate(rangeEnd, 1)
+      const generation = generationRef.current
+      setRangeEnd(newEnd)
+      fetchResourceCalendarRange(sliceStart, newEnd, includeKey).then((resp) => {
+        if (generation === generationRef.current) mergeResponse(resp)
+      })
+    },
+    [rangeEnd, includeKey],
+  )
+
+  // Testing feedback item D's polling refresh — refetches the current
+  // loaded window in full (correctness over the marginal savings of a
+  // merge, for a background 45s poll) rather than growing it.
+  const reload = useCallback(() => {
+    const generation = generationRef.current
+    fetchResourceCalendarRange(rangeStart, rangeEnd, includeKey).then((resp) => {
+      if (generation !== generationRef.current) return
+      setRowsByPerson(new Map(resp.rows.map((r) => [r.person_id, r])))
+      setEvents(resp.prospective_events)
+    })
+  }, [rangeStart, rangeEnd, includeKey])
+
+  const rows = useMemo(() => [...rowsByPerson.values()], [rowsByPerson])
+
+  return { rows, events, loading, rangeStart, rangeEnd, expandStart, expandEnd, reload }
 }
 
 export function useJobRequirements(jobId: string | undefined) {

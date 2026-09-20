@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -56,7 +56,7 @@ import {
   updateProspectiveEvent,
   dropProspectiveEvent,
   convertProspectiveEvent,
-  useResourceCalendar,
+  useResourceCalendarWindow,
   useProjects,
   useRoles,
   createJob,
@@ -517,31 +517,6 @@ function sameDay(a: Date, b: Date): boolean {
   return a.toDateString() === b.toDateString()
 }
 
-// monthSpan defaults to 1 (existing single-month behaviour, untouched) —
-// the 2-month view passes 2 to get one continuous run of weeks covering
-// both months. Deliberately one continuous cursor walk rather than two
-// separate getMonthWeeks(refDate) / getMonthWeeks(nextMonth) calls: two
-// independent calls would each pad out to a full week at the seam,
-// duplicating that shared week (and its job bars, each with its own
-// independently-packed lane assignment) once as "next month" filler in
-// month 1's grid and again as "prev month" filler in month 2's — a single
-// walk across the full range produces that seam week exactly once.
-function getMonthWeeks(refDate: Date, monthSpan = 1): Date[][] {
-  const year = refDate.getFullYear()
-  const month = refDate.getMonth()
-  const firstOfMonth = new Date(year, month, 1)
-  const lastOfRange = new Date(year, month + monthSpan, 0)
-  const gridStart = startOfWeek(firstOfMonth)
-  const gridEnd = startOfWeek(lastOfRange)
-  const weeks: Date[][] = []
-  let cursor = gridStart
-  while (cursor <= gridEnd) {
-    weeks.push(Array.from({ length: 7 }, (_, i) => addDays(cursor, i)))
-    cursor = addDays(cursor, 7)
-  }
-  return weeks
-}
-
 interface CalendarJob {
   id: string
   name: string
@@ -949,8 +924,26 @@ function ProspectiveEventDetailCard({
   )
 }
 
-type CalendarMode = 'month' | 'week' | '2months'
-const CALENDAR_MODE_LABELS: Record<CalendarMode, string> = { month: 'Month', week: 'Week', '2months': '2 months' }
+type CalendarMode = 'month' | 'week'
+const CALENDAR_MODE_LABELS: Record<CalendarMode, string> = { month: 'Month', week: 'Week' }
+
+function addWeeks(date: Date, n: number): Date {
+  return addDays(date, n * 7)
+}
+
+// Continuous-scroll tuning — CC's own brief: Month/Week now both render as
+// one continuous scroll rather than a bounded grid with prev/next, and
+// 2-month view is gone (redundant once scroll itself is continuous).
+// INITIAL_RADIUS/EXPAND_WEEKS control how many weeks render up front and
+// get appended/prepended once the scroller comes within EDGE_THRESHOLD_PX
+// of an end. No eviction of already-rendered weeks: unlike Team below,
+// Calendar's data (summaries) is already fully loaded client-side in one
+// shot at the app root, so a bigger rendered window only ever costs more
+// DOM, never more network — and no real scheduling session scrolls far
+// enough in one sitting for that to matter.
+const CALENDAR_INITIAL_RADIUS_WEEKS = 8
+const CALENDAR_EXPAND_WEEKS = 8
+const CALENDAR_EDGE_THRESHOLD_PX = 900
 
 function CalendarContent({
   summaries,
@@ -964,7 +957,9 @@ function CalendarContent({
   onConvertEvent: (event: ProspectiveEvent) => void
 }) {
   const [mode, setMode] = useState<CalendarMode>('month')
-  const [refDate, setRefDate] = useState(new Date())
+  const todayWeekStart = useMemo(() => startOfWeek(new Date()), [])
+  const [rangeStart, setRangeStart] = useState(() => addWeeks(todayWeekStart, -CALENDAR_INITIAL_RADIUS_WEEKS))
+  const [rangeEnd, setRangeEnd] = useState(() => addWeeks(todayWeekStart, CALENDAR_INITIAL_RADIUS_WEEKS))
   const [addingEvent, setAddingEvent] = useState(false)
   // Testing feedback U — set when "add event" was opened by clicking a
   // specific date, rather than the "+ Prospective event" button; undefined
@@ -972,6 +967,23 @@ function CalendarContent({
   const [eventPrefillDate, setEventPrefillDate] = useState<string | undefined>(undefined)
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>(undefined)
   const { data: prospectiveEvents, reload: reloadEvents } = useProspectiveEvents()
+
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const todayRowRef = useRef<HTMLDivElement>(null)
+  const monthDividerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const scrollHeightBeforeRef = useRef(0)
+  const pendingCompensationRef = useRef(false)
+  // Guards against a runaway chain of expansions: a scroll container fires
+  // many scroll events per pixel during momentum scrolling, and rangeStart/
+  // rangeEnd don't update mid-event — without this, every one of those
+  // events while still within the edge threshold would queue another
+  // expansion on top of the last, compounding within a single tick. Set
+  // right before triggering, cleared only once the corresponding range
+  // state has actually changed (see the effects below), so at most one
+  // expansion per edge is ever in flight at a time.
+  const expandingTopRef = useRef(false)
+  const expandingBottomRef = useRef(false)
+  const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[todayWeekStart.getMonth()]} ${todayWeekStart.getFullYear()}`)
 
   const openEvents = useMemo(() => prospectiveEvents.filter((e) => e.status === 'open'), [prospectiveEvents])
   const selectedEvent = openEvents.find((e) => e.id === selectedEventId)
@@ -996,51 +1008,84 @@ function CalendarContent({
     [summaries, clients],
   )
 
-  // '2months' walks getMonthWeeks as one continuous run (monthSpan: 2) —
-  // see that function's own comment for why this must not be two separate
-  // getMonthWeeks(refDate) calls (it would duplicate the seam week).
-  const weeks =
-    mode === 'month'
-      ? getMonthWeeks(refDate)
-      : mode === '2months'
-        ? getMonthWeeks(refDate, 2)
-        : [Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(refDate), i))]
+  // The full continuous run of weeks currently rendered — grows via
+  // handleScroll below as the scroller nears either edge, in place of the
+  // old bounded month/2-month grid.
+  const weekStarts = useMemo(() => {
+    const out: Date[] = []
+    let cursor = rangeStart
+    while (cursor <= rangeEnd) {
+      out.push(cursor)
+      cursor = addWeeks(cursor, 1)
+    }
+    return out
+  }, [rangeStart, rangeEnd])
 
-  // Both months in a 2-month view are "current" — only genuine overflow
-  // into the month before/after the visible range should grey out, same
-  // convention as single-month view's leading/trailing filler days.
-  const secondMonthRef = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 1)
-  const referenceMonths = mode === '2months' ? [refDate.getMonth(), secondMonthRef.getMonth()] : [refDate.getMonth()]
+  // Every day is "in range" now. The old greying distinguished a bounded
+  // grid's real days (this month) from its padding days (the sliver of
+  // the month before/after, shown only to fill out the grid) — that
+  // distinction doesn't exist in a continuous list, where every rendered
+  // day genuinely belongs to whichever month it falls in.
+  const allMonths = useMemo(() => Array.from({ length: 12 }, (_, i) => i), [])
 
-  const goPrev = () =>
-    setRefDate((d) => {
-      if (mode === 'month') return new Date(d.getFullYear(), d.getMonth() - 1, 1)
-      if (mode === '2months') return new Date(d.getFullYear(), d.getMonth() - 2, 1)
-      return addDays(d, -7)
-    })
-  const goNext = () =>
-    setRefDate((d) => {
-      if (mode === 'month') return new Date(d.getFullYear(), d.getMonth() + 1, 1)
-      if (mode === '2months') return new Date(d.getFullYear(), d.getMonth() + 2, 1)
-      return addDays(d, 7)
-    })
-  const goToday = () => setRefDate(new Date())
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    if (el.scrollTop < CALENDAR_EDGE_THRESHOLD_PX && !expandingTopRef.current) {
+      // Prepending shifts everything below down by the height just added —
+      // compensated in the layout effect below, keyed off rangeStart.
+      expandingTopRef.current = true
+      scrollHeightBeforeRef.current = el.scrollHeight
+      pendingCompensationRef.current = true
+      setRangeStart((d) => addWeeks(d, -CALENDAR_EXPAND_WEEKS))
+    } else if (el.scrollHeight - el.scrollTop - el.clientHeight < CALENDAR_EDGE_THRESHOLD_PX && !expandingBottomRef.current) {
+      expandingBottomRef.current = true
+      setRangeEnd((d) => addWeeks(d, CALENDAR_EXPAND_WEEKS))
+    }
 
-  const headerLabel =
-    mode === 'month'
-      ? `${MONTH_LABELS[refDate.getMonth()]} ${refDate.getFullYear()}`
-      : mode === '2months'
-        ? refDate.getFullYear() === secondMonthRef.getFullYear()
-          ? `${MONTH_LABELS[refDate.getMonth()]} – ${MONTH_LABELS[secondMonthRef.getMonth()]} ${refDate.getFullYear()}`
-          : `${MONTH_LABELS[refDate.getMonth()]} ${refDate.getFullYear()} – ${MONTH_LABELS[secondMonthRef.getMonth()]} ${secondMonthRef.getFullYear()}`
-        : (() => {
-            const s = startOfWeek(refDate)
-            const e = addDays(s, 6)
-            return `${s.getDate()} – ${e.getDate()} ${MONTH_LABELS[e.getMonth()]} ${e.getFullYear()}`
-          })()
+    // No sticky positioning — just tracks whichever month divider is
+    // nearest the top of the scroller, so the header label stays
+    // meaningful while scrolling through a continuous run of months.
+    const containerTop = el.getBoundingClientRect().top
+    let current = visibleMonthLabel
+    for (const [key, node] of monthDividerRefs.current) {
+      if (node.getBoundingClientRect().top - containerTop <= 40) current = key
+    }
+    if (current !== visibleMonthLabel) setVisibleMonthLabel(current)
+  }
+
+  // Classic infinite-list technique: after prepending weeks above the
+  // viewport, shift scrollTop by exactly the height just added so the
+  // scheduler's actual view doesn't visually jump. Also re-arms the top
+  // guard above — rangeStart has now actually moved, so a further scroll
+  // near the top is allowed to trigger another expansion.
+  useLayoutEffect(() => {
+    expandingTopRef.current = false
+    if (!pendingCompensationRef.current) return
+    pendingCompensationRef.current = false
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop += el.scrollHeight - scrollHeightBeforeRef.current
+  }, [rangeStart])
+
+  // Re-arms the bottom guard once rangeEnd has actually moved.
+  useEffect(() => {
+    expandingBottomRef.current = false
+  }, [rangeEnd])
+
+  // Lands on today by default — the initial render starts
+  // CALENDAR_INITIAL_RADIUS_WEEKS weeks before today, not at today itself.
+  useEffect(() => {
+    todayRowRef.current?.scrollIntoView({ block: 'start' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function goToday() {
+    todayRowRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '24px 32px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
         <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)' }}>Calendar</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1054,7 +1099,7 @@ function CalendarContent({
             <Plus size={13} /> Prospective event
           </button>
           <div style={{ display: 'flex', background: '#fff', border: '1px solid var(--line)', borderRadius: 10, padding: 3 }}>
-            {(['month', 'week', '2months'] as const).map((m) => (
+            {(['month', 'week'] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
@@ -1080,21 +1125,13 @@ function CalendarContent({
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button onClick={goPrev} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--line)', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-            <ChevronLeft size={15} color="var(--ink-muted)" />
-          </button>
-          <button onClick={goNext} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--line)', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-            <ChevronRight size={15} color="var(--ink-muted)" />
-          </button>
-          <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', marginLeft: 4 }}>{headerLabel}</div>
-        </div>
+        <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{visibleMonthLabel}</div>
         <button onClick={goToday} style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)', cursor: 'pointer' }}>
           Today
         </button>
       </div>
 
-      <div style={{ border: '1px solid var(--line)', borderRadius: 12, background: '#fff', overflow: 'hidden' }}>
+      <div style={{ border: '1px solid var(--line)', borderRadius: 12, background: '#fff', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', background: 'var(--surface)', borderBottom: '1px solid var(--line)' }}>
           {WEEKDAY_LABELS.map((d) => (
             <div key={d} style={{ padding: '8px 10px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
@@ -1102,33 +1139,48 @@ function CalendarContent({
             </div>
           ))}
         </div>
-        {weeks.map((weekDates, i) => (
-          <Fragment key={i}>
-            {/* One continuous week-grid, not two separate month blocks (see
-                getMonthWeeks's comment) — this divider is purely a visual
-                orientation cue marking where the second month starts,
-                rendered exactly once right before the week that contains
-                its 1st, never duplicating a week or its job bars. */}
-            {mode === '2months' && weekDates.some((d) => sameDay(d, secondMonthRef)) && (
-              <div style={{ padding: '6px 10px', fontFamily: 'var(--font)', fontWeight: 700, fontSize: 11.5, color: 'var(--ink)', background: 'var(--surface)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
-                {MONTH_LABELS[secondMonthRef.getMonth()]} {secondMonthRef.getFullYear()}
-              </div>
-            )}
-            <WeekRow
-              weekDates={weekDates}
-              referenceMonths={referenceMonths}
-              tall={mode === 'week'}
-              jobs={calendarJobs}
-              events={openEvents}
-              onOpenJob={onOpenJob}
-              onSelectEvent={(event) => setSelectedEventId(event.id)}
-              onSelectDate={(iso) => {
-                setEventPrefillDate(iso)
-                setAddingEvent(true)
-              }}
-            />
-          </Fragment>
-        ))}
+        <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto' }}>
+          {weekStarts.map((weekStart) => {
+            const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
+            const isTodayWeek = sameDay(weekStart, todayWeekStart)
+            // A month divider renders right before the week containing that
+            // month's 1st — same "exactly once, never duplicated" idea the
+            // old fixed 2-month seam used, just applied at every month
+            // boundary the continuous scroll crosses instead of one fixed one.
+            const monthBoundary = weekDates.find((d) => d.getDate() === 1)
+            return (
+              <Fragment key={weekStart.toISOString()}>
+                {monthBoundary && (
+                  <div
+                    ref={(node) => {
+                      const key = `${MONTH_LABELS[monthBoundary.getMonth()]} ${monthBoundary.getFullYear()}`
+                      if (node) monthDividerRefs.current.set(key, node)
+                      else monthDividerRefs.current.delete(key)
+                    }}
+                    style={{ padding: '6px 10px', fontFamily: 'var(--font)', fontWeight: 700, fontSize: 11.5, color: 'var(--ink)', background: 'var(--surface)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}
+                  >
+                    {MONTH_LABELS[monthBoundary.getMonth()]} {monthBoundary.getFullYear()}
+                  </div>
+                )}
+                <div ref={isTodayWeek ? todayRowRef : undefined}>
+                  <WeekRow
+                    weekDates={weekDates}
+                    referenceMonths={allMonths}
+                    tall={mode === 'week'}
+                    jobs={calendarJobs}
+                    events={openEvents}
+                    onOpenJob={onOpenJob}
+                    onSelectEvent={(event) => setSelectedEventId(event.id)}
+                    onSelectDate={(iso) => {
+                      setEventPrefillDate(iso)
+                      setAddingEvent(true)
+                    }}
+                  />
+                </div>
+              </Fragment>
+            )
+          })}
+        </div>
       </div>
 
       {selectedEvent && (
@@ -3763,7 +3815,7 @@ function JobsContent({
               {/* Only shown for Jobs actually linked to a shared Core Job (i.e.
                   fetched from Monday) — hand-created Jobs have no order_number
                   to show, per testing feedback item C. */}
-              {selected.job.shared_job_id && selected.job.order_number && <InfoRow icon={LinkIcon} label="Monday ref" value={selected.job.order_number} />}
+              {selected.job.shared_job_id && selected.job.order_number && <InfoRow icon={LinkIcon} label="Program Ref" value={selected.job.order_number} />}
             </div>
             <JobDayLabelsRow job={selected.job} />
           </>
@@ -4393,42 +4445,23 @@ function dateISO(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
-function getMonthDates(refDate: Date): Date[] {
-  const year = refDate.getFullYear()
-  const month = refDate.getMonth()
-  const daysInMonth = new Date(year, month + 1, 0).getDate()
-  return Array.from({ length: daysInMonth }, (_, i) => new Date(year, month, i + 1))
-}
+type TeamMode = 'month' | 'week'
 
-type TeamMode = 'month' | 'week' | 'fortnight' | '2months'
+const TEAM_MODE_LABELS: Record<TeamMode, string> = { month: 'Month', week: 'Week' }
 
-const TEAM_MODE_LABELS: Record<TeamMode, string> = { month: 'Month', week: 'Week', fortnight: 'Fortnight', '2months': '2 months' }
-
-// Week/Fortnight reuse the same startOfWeek/addDays helpers CalendarContent
-// already uses for its own month/week switcher — fortnight is just that
-// idea extended to 14 days instead of 7. 2months is two calendar months'
-// worth of getMonthDates back to back — the backend endpoint takes an
-// arbitrary start/end window already (confirmed against
-// GetResourceCalendar directly, no LIMIT or day-count assumption anywhere
-// in it), so this is purely a wider `dates` array; nothing else about the
-// grid needs to know it's looking at two months instead of one.
-function getTeamDates(mode: TeamMode, refDate: Date): Date[] {
-  if (mode === 'month') return getMonthDates(refDate)
-  if (mode === '2months') {
-    const nextMonthRef = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 1)
-    return [...getMonthDates(refDate), ...getMonthDates(nextMonthRef)]
-  }
-  const start = startOfWeek(refDate)
-  const days = mode === 'week' ? 7 : 14
-  return Array.from({ length: days }, (_, i) => addDays(start, i))
-}
+// DD — Team's own continuous-scroll redesign, same treatment as Calendar's
+// (CC): Fortnight and 2-month are gone (redundant once scrolling itself is
+// continuous — there's no fixed "page size" left for them to be an
+// alternative to), and Month/Week are now purely a column-width/density
+// choice over one continuously-scrollable date axis, not separate bounded
+// ranges. See ResourceCalendarContent for the scroll-driven range that
+// replaces getTeamDates/getMonthDates (both removed - nothing computes a
+// bounded date array from a single refDate anymore).
 
 // Month's whole purpose is the wide overview — 30px columns, hover-only
-// detail is the correct trade-off there and stays untouched. Week/Fortnight
-// trade overview width for enough room to show a short job name or leave
-// reason inline, without truncating to nothing. 2months is the same
-// overview trade-off as Month, just longer, so it shares Month's narrow
-// column width rather than Week/Fortnight's wide one.
+// detail is the correct trade-off there and stays untouched. Week trades
+// overview width for enough room to show a short job name or leave reason
+// inline, without truncating to nothing.
 const DAY_COL_WIDTH = 30
 const WIDE_DAY_COL_WIDTH = 100
 const NAME_COL_WIDTH = 168
@@ -4512,11 +4545,10 @@ function ResourceCalendarCell({
         : undefined
 
   // Additive, not a replacement: the tooltip above already carries more
-  // detail (role name, status) than fits inline even in Fortnight mode, so
-  // it stays in all three modes regardless of what's shown inline. Month
-  // keeps zero inline text — its 30px columns are the wide-overview trade-off,
-  // unchanged from today.
-  const showInline = mode === 'week' || mode === 'fortnight'
+  // detail (role name, status) than fits inline, so it stays regardless of
+  // what's shown inline. Month keeps zero inline text — its 30px columns
+  // are the wide-overview trade-off, unchanged from today.
+  const showInline = mode === 'week'
   const inlineText = !showInline ? undefined : booking ? booking.job_name : unavailable ? (unavailable.type ? AVAILABILITY_TYPE_LABEL[unavailable.type] : 'Unavailable') : undefined
   const inlineColor = booking ? '#fff' : 'var(--danger)'
   // Testing feedback item E: pencilled (and conflict) cells use a hatched
@@ -4596,9 +4628,9 @@ function ResourceCalendarCell({
 // colour/status — two different but adjacent bookings that happen to
 // share a status must stay separate cells, which is exactly why this
 // keys off booking.id rather than bookingCellStyle's output. A run is
-// clipped to whatever's actually in `dates` (Week/Fortnight can show only
-// part of a longer booking) — same clip-to-visible-range idea
-// CalendarContent's packRanges already uses for job bars.
+// clipped to whatever's actually in `dates` (the currently-loaded window
+// can show only part of a longer booking) — same clip-to-visible-range
+// idea CalendarContent's packRanges already uses for job bars.
 type RowSegment = { date: Date } | { dates: Date[]; booking: ResourceCalendarBooking }
 
 function buildRowSegments(row: ResourceCalendarRow, dates: Date[]): RowSegment[] {
@@ -4652,7 +4684,7 @@ function ResourceCalendarBookingRun({
   const conflict = booking.status === 'conflict' || anyUnavailable
 
   const style = bookingCellStyle(booking)
-  const showInline = mode === 'week' || mode === 'fortnight'
+  const showInline = mode === 'week'
   const inlineText = showInline ? booking.job_name : undefined
   const hatchedText = booking.status === 'pencilled' || booking.status === 'conflict'
 
@@ -4712,6 +4744,22 @@ function LegendItem({ swatch, label }: { swatch: React.ReactNode; label: string 
   )
 }
 
+// DD — Team's own continuous-scroll tuning, same idea as Calendar's (CC)
+// but along Team's own horizontal axis (dates run across, people down —
+// see ResourceCalendarContent's own opening comment). Team's data isn't
+// already loaded client-side like Calendar's summaries are, so unlike CC
+// this can't skip network concerns: useResourceCalendarWindow only ever
+// fetches the newly-exposed slice on each expansion, never the whole grown
+// range again, which is what actually keeps a long scroll session from
+// loading an unreasonable chunk at once.
+const TEAM_INITIAL_RADIUS_DAYS = 45
+const TEAM_EXPAND_DAYS = 30
+const TEAM_EDGE_THRESHOLD_DAYS = 14
+
+function parseISODate(iso: string): Date {
+  return new Date(iso + 'T00:00:00')
+}
+
 function ResourceCalendarContent({
   people,
   onOpenJob,
@@ -4726,17 +4774,41 @@ function ResourceCalendarContent({
   onConvertEvent: (event: ProspectiveEvent) => void
 }) {
   const [mode, setMode] = useState<TeamMode>('month')
-  const [refDate, setRefDate] = useState(new Date())
   const [includeIds, setIncludeIds] = useState<string[]>([])
   const [search, setSearch] = useState('')
 
-  const dates = useMemo(() => getTeamDates(mode, refDate), [mode, refDate])
-  const colWidth = mode === 'week' || mode === 'fortnight' ? WIDE_DAY_COL_WIDTH : DAY_COL_WIDTH
-  const startDate = dateISO(dates[0])
-  const endDate = dateISO(dates[dates.length - 1])
+  const today = useMemo(() => new Date(), [])
+  const todayISOString = useMemo(() => dateISO(today), [today])
+  const initialStart = useMemo(() => dateISO(addDays(today, -TEAM_INITIAL_RADIUS_DAYS)), [today])
+  const initialEnd = useMemo(() => dateISO(addDays(today, TEAM_INITIAL_RADIUS_DAYS)), [today])
 
-  const { data, loading, reload } = useResourceCalendar(startDate, endDate, includeIds)
-  const today = new Date()
+  const { rows, events, loading, rangeStart, rangeEnd, expandStart, expandEnd, reload } = useResourceCalendarWindow(initialStart, initialEnd, includeIds)
+
+  const colWidth = mode === 'week' ? WIDE_DAY_COL_WIDTH : DAY_COL_WIDTH
+
+  // The full continuous run of days currently loaded — grows via
+  // handleScroll below as the scroller nears either edge, in place of the
+  // old bounded month/fortnight/2-month window.
+  const dates = useMemo(() => {
+    const out: Date[] = []
+    let cursor = parseISODate(rangeStart)
+    const end = parseISODate(rangeEnd)
+    while (cursor <= end) {
+      out.push(cursor)
+      cursor = addDays(cursor, 1)
+    }
+    return out
+  }, [rangeStart, rangeEnd])
+
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const todayColRef = useRef<HTMLDivElement>(null)
+  const scrollWidthBeforeRef = useRef(0)
+  const pendingCompensationRef = useRef(false)
+  // Same runaway-chain guard as Calendar's own (CC) — see that component's
+  // comment for why this is needed, not just a nice-to-have.
+  const expandingStartRef = useRef(false)
+  const expandingEndRef = useRef(false)
+  const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[today.getMonth()]} ${today.getFullYear()}`)
 
   // Testing feedback item D: a second scheduler's changes (a new booking,
   // a newly-crewed Job) weren't visible here until a manual page refresh —
@@ -4751,33 +4823,64 @@ function ResourceCalendarContent({
     return () => clearInterval(id)
   }, [reload])
 
-  const goPrev = () => {
-    if (mode === 'month') return setRefDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))
-    if (mode === '2months') return setRefDate((d) => new Date(d.getFullYear(), d.getMonth() - 2, 1))
-    setRefDate((d) => addDays(d, mode === 'week' ? -7 : -14))
-  }
-  const goNext = () => {
-    if (mode === 'month') return setRefDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))
-    if (mode === '2months') return setRefDate((d) => new Date(d.getFullYear(), d.getMonth() + 2, 1))
-    setRefDate((d) => addDays(d, mode === 'week' ? 7 : 14))
-  }
-  const goToday = () => setRefDate(new Date())
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    const thresholdPx = TEAM_EDGE_THRESHOLD_DAYS * colWidth
+    if (el.scrollLeft < thresholdPx && !expandingStartRef.current) {
+      // Prepending days shifts everything to the right by the width just
+      // added — compensated in the layout effect below, keyed off rangeStart.
+      expandingStartRef.current = true
+      scrollWidthBeforeRef.current = el.scrollWidth
+      pendingCompensationRef.current = true
+      expandStart(dateISO(addDays(parseISODate(rangeStart), -TEAM_EXPAND_DAYS)))
+    } else if (el.scrollWidth - el.scrollLeft - el.clientWidth < thresholdPx && !expandingEndRef.current) {
+      expandingEndRef.current = true
+      expandEnd(dateISO(addDays(parseISODate(rangeEnd), TEAM_EXPAND_DAYS)))
+    }
 
-  const headerLabel =
-    mode === 'month'
-      ? `${MONTH_LABELS[refDate.getMonth()]} ${refDate.getFullYear()}`
-      : mode === '2months'
-        ? (() => {
-            const endRef = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 1)
-            return refDate.getFullYear() === endRef.getFullYear()
-              ? `${MONTH_LABELS[refDate.getMonth()]} – ${MONTH_LABELS[endRef.getMonth()]} ${refDate.getFullYear()}`
-              : `${MONTH_LABELS[refDate.getMonth()]} ${refDate.getFullYear()} – ${MONTH_LABELS[endRef.getMonth()]} ${endRef.getFullYear()}`
-          })()
-        : (() => {
-            const s = dates[0]
-            const e = dates[dates.length - 1]
-            return `${s.getDate()} – ${e.getDate()} ${MONTH_LABELS[e.getMonth()]} ${e.getFullYear()}`
-          })()
+    // No sticky month divider here (Team's grid has no spare row to put
+    // one in without breaking the per-person row layout) — instead this
+    // just derives which date column is at the scroller's left edge
+    // (scrollLeft maps directly to a day index at the current colWidth,
+    // since the sticky name column doesn't add extra scrollable space at
+    // the very start) and labels the header with its month.
+    const visibleIndex = Math.max(0, Math.min(dates.length - 1, Math.floor(el.scrollLeft / colWidth)))
+    const d = dates[visibleIndex]
+    if (d) {
+      const label = `${MONTH_LABELS[d.getMonth()]} ${d.getFullYear()}`
+      if (label !== visibleMonthLabel) setVisibleMonthLabel(label)
+    }
+  }
+
+  // Same infinite-list scroll-compensation technique as Calendar's own —
+  // after prepending days to the left, scrollLeft is nudged by exactly the
+  // width just added so the scheduler's actual view doesn't visually jump.
+  // Also re-arms expandingStartRef now that rangeStart has actually moved.
+  useLayoutEffect(() => {
+    expandingStartRef.current = false
+    if (!pendingCompensationRef.current) return
+    pendingCompensationRef.current = false
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollLeft += el.scrollWidth - scrollWidthBeforeRef.current
+  }, [rangeStart])
+
+  // Re-arms expandingEndRef once rangeEnd has actually moved.
+  useEffect(() => {
+    expandingEndRef.current = false
+  }, [rangeEnd])
+
+  // Lands on today by default — the initial window starts
+  // TEAM_INITIAL_RADIUS_DAYS before today, not at today itself.
+  useEffect(() => {
+    todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function goToday() {
+    todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest', behavior: 'smooth' })
+  }
 
   // Explicitly-added rows are session state only, never persisted — see
   // addendum v2 §1's "no pinning is persisted in v1."
@@ -4789,9 +4892,6 @@ function ResourceCalendarContent({
       .filter((p) => `${p.first_name} ${p.last_name}`.toLowerCase().includes(q))
       .slice(0, 6)
   }, [search, people, includeIds])
-
-  const rows = data?.rows ?? []
-  const events = data?.prospective_events ?? []
 
   return (
     <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: '24px 32px' }}>
@@ -4830,18 +4930,12 @@ function ResourceCalendarContent({
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <button onClick={goPrev} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--line)', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-          <ChevronLeft size={15} color="var(--ink-muted)" />
-        </button>
-        <button onClick={goNext} style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--line)', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-          <ChevronRight size={15} color="var(--ink-muted)" />
-        </button>
-        <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{headerLabel}</div>
+        <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{visibleMonthLabel}</div>
         <button onClick={goToday} style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)', cursor: 'pointer' }}>
           Today
         </button>
         <div style={{ display: 'flex', background: '#fff', border: '1px solid var(--line)', borderRadius: 10, padding: 3, marginLeft: 4 }}>
-          {(['month', 'week', 'fortnight', '2months'] as const).map((m) => (
+          {(['month', 'week'] as const).map((m) => (
             <button
               key={m}
               onClick={() => setMode(m)}
@@ -4854,16 +4948,17 @@ function ResourceCalendarContent({
         {loading && <span style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)' }}>Loading…</span>}
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 12, background: '#fff' }}>
+      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 12, background: '#fff' }}>
         <div style={{ display: 'grid', gridTemplateColumns: `${NAME_COL_WIDTH}px repeat(${dates.length}, ${colWidth}px)`, width: 'max-content' }}>
           <div style={{ position: 'sticky', top: 0, left: 0, zIndex: 4, background: 'var(--surface)', borderBottom: '1px solid var(--line)', borderRight: '1px solid var(--line)' }} />
           {dates.map((date) => {
             const iso = dateISO(date)
             const inEvent = events.find((e) => e.date_start <= iso && e.date_end >= iso)
-            const isToday = sameDay(date, today)
+            const isToday = iso === todayISOString
             return (
               <div
                 key={iso}
+                ref={isToday ? todayColRef : undefined}
                 title={inEvent ? `${inEvent.name} (prospective) — click to convert to a job` : undefined}
                 onClick={inEvent ? () => onConvertEvent(inEvent) : undefined}
                 style={{
@@ -4938,7 +5033,7 @@ function ResourceCalendarContent({
 
           {!loading && rows.length === 0 && (
             <div style={{ gridColumn: '1 / -1', padding: '32px 0', textAlign: 'center', fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>
-              No one to show for this month — staff appear here always; freelancers show up once they have a booking or availability entry.
+              No one to show for this range — staff appear here always; freelancers show up once they have a booking or availability entry.
             </div>
           )}
         </div>
