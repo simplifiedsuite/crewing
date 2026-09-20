@@ -87,6 +87,14 @@ func main() {
 	r.With(middleware.RateLimit(6, time.Minute)).Post("/api/auth/forgot-password", api.RequestStaffPasswordReset)
 	r.With(middleware.RateLimit(20, time.Minute)).Post("/api/auth/reset-password", api.ConfirmStaffPasswordReset)
 
+	// Self-service freelancer offer response (Addendum v3 §2) — public,
+	// unauthenticated, token-based. GET is read-only page data; the actual
+	// accept/decline action only ever happens via POST (see
+	// RespondToBookingOffer's own comment on why a bare GET must never
+	// action anything).
+	r.With(middleware.RateLimit(30, time.Minute)).Get("/api/booking-offers/{token}", api.GetBookingOffer)
+	r.With(middleware.RateLimit(20, time.Minute)).Post("/api/booking-offers/{token}/respond", api.RespondToBookingOffer)
+
 	registerStaffRoutes(r, api)
 	registerCrewRoutes(r, api)
 

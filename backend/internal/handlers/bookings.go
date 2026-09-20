@@ -16,7 +16,7 @@ import (
 )
 
 // bookingContext is what every notification trigger below needs to render
-// its template: role/job/dates/venue plus the identifiers to act on.
+// its template: role/job/dates/venue/call time plus the identifiers to act on.
 type bookingContext struct {
 	PersonID  string
 	RoleName  string
@@ -24,6 +24,11 @@ type bookingContext struct {
 	JobID     string
 	DatesText string
 	Venue     string
+	// CallTime — added for RenderBookingPencilled (Addendum v3 §4, the one
+	// trigger that wants it inline in the email rather than leaving it to
+	// "open Ralto for details"). nil means TBC, same as everywhere else
+	// call_time is nullable.
+	CallTime *string
 }
 
 func (a *API) loadBookingContext(ctx context.Context, bookingID string) (bookingContext, error) {
@@ -31,7 +36,7 @@ func (a *API) loadBookingContext(ctx context.Context, bookingID string) (booking
 	err := a.DB.QueryRow(ctx,
 		`SELECT b.person_id, ro.name, j.name, j.id,
 		        to_char(b.start_date, 'DD Mon') || '–' || to_char(b.end_date, 'DD Mon'),
-		        COALESCE(v.name, 'Venue TBC')
+		        COALESCE(v.name, 'Venue TBC'), b.call_time
 		 FROM bookings b
 		 JOIN job_requirements jr ON jr.id = b.job_requirement_id
 		 JOIN jobs j ON j.id = jr.job_id
@@ -39,7 +44,7 @@ func (a *API) loadBookingContext(ctx context.Context, bookingID string) (booking
 		 LEFT JOIN venues v ON v.id = j.venue_id
 		 WHERE b.id = $1`,
 		bookingID,
-	).Scan(&c.PersonID, &c.RoleName, &c.JobName, &c.JobID, &c.DatesText, &c.Venue)
+	).Scan(&c.PersonID, &c.RoleName, &c.JobName, &c.JobID, &c.DatesText, &c.Venue, &c.CallTime)
 	return c, err
 }
 
@@ -83,13 +88,18 @@ type bookingWithPersonResponse struct {
 	// updated — the frontend treats that the same as full coverage rather
 	// than showing a false "0 days" warning (see JobRoleRow/BookedPersonRow).
 	ShiftDates []string `json:"shift_dates"`
+	// EmploymentType — Addendum v3 §1/§3. Planner's BookedPersonRow needs
+	// this to gate Confirm correctly (freelancer: pencilled only) and to
+	// show the "record a phone response" actions (freelancer + offered
+	// only, see RecordBookingResponse) — staff are unaffected either way.
+	EmploymentType models.EmploymentType `json:"employment_type"`
 }
 
 func (a *API) ListBookingsForRequirement(w http.ResponseWriter, r *http.Request) {
 	reqID := chi.URLParam(r, "reqId")
 	rows, err := a.DB.Query(r.Context(),
 		`SELECT b.id, b.job_requirement_id, b.person_id, b.status, b.start_date, b.end_date, b.call_time, b.rate_override,
-		        b.offered_at, b.responded_at, b.confirmed_at, b.notes, p.first_name, p.last_name,
+		        b.offered_at, b.responded_at, b.confirmed_at, b.notes, p.first_name, p.last_name, p.employment_type,
 		        COALESCE((SELECT array_agg(to_char(bs.date, 'YYYY-MM-DD') ORDER BY bs.date) FROM booking_shifts bs WHERE bs.booking_id = b.id), '{}')
 		 FROM bookings b
 		 JOIN people p ON p.id = b.person_id
@@ -105,7 +115,7 @@ func (a *API) ListBookingsForRequirement(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var b bookingWithPersonResponse
 		if err := rows.Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
-			&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes, &b.FirstName, &b.LastName, &b.ShiftDates); err != nil {
+			&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes, &b.FirstName, &b.LastName, &b.EmploymentType, &b.ShiftDates); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list bookings")
 			return
 		}
@@ -272,7 +282,7 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 	case models.BookingStatusOffered:
 		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 		if ctxErr == nil {
-			subject, body := notify.RenderBookingOffered(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/offers/"+b.ID))
+			subject, body := notify.RenderBookingOffered(ctx.RoleName, ctx.JobName, ctx.DatesText, a.offerCTAURL(r.Context(), b.ID, ctx.PersonID))
 			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingOffered,
 				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
 		}
@@ -318,9 +328,78 @@ func (a *API) PromoteBookingToOffer(w http.ResponseWriter, r *http.Request) {
 
 	ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 	if ctxErr == nil {
-		subject, body := notify.RenderBookingOffered(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/offers/"+b.ID))
+		subject, body := notify.RenderBookingOffered(ctx.RoleName, ctx.JobName, ctx.DatesText, a.offerCTAURL(r.Context(), b.ID, ctx.PersonID))
 		_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingOffered,
 			map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+	}
+
+	writeJSON(w, http.StatusOK, b)
+}
+
+type recordBookingResponseRequest struct {
+	Response string `json:"response"` // "pencil" | "decline"
+}
+
+// RecordBookingResponse is the scheduler-manual half of Addendum v3 §3 —
+// a scheduler recording a freelancer's phone/WhatsApp/in-person response
+// to an outstanding offer, as a first-class alternative to the self-
+// service token flow (RespondToBookingOffer), not a fallback for it.
+// Requires the booking to currently be Offered — a scheduler using this to
+// record "they said yes" or "they said no" to an ask that's actually gone
+// out, matching the same Offered -> Pencilled | Declined transition the
+// token/app self-service paths use. Confirming (Pencilled -> Confirmed) is
+// ConfirmBooking, not this — this only covers the response to the original
+// ask.
+func (a *API) RecordBookingResponse(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req recordBookingResponseRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var newStatus models.BookingStatus
+	switch req.Response {
+	case "pencil":
+		newStatus = models.BookingStatusPencilled
+	case "decline":
+		newStatus = models.BookingStatusDeclined
+	default:
+		writeError(w, http.StatusBadRequest, "response must be pencil or decline")
+		return
+	}
+
+	var b models.Booking
+	err := a.DB.QueryRow(r.Context(),
+		`UPDATE bookings SET status = $1, responded_at = now(), response_channel = 'scheduler_manual'
+		 WHERE id = $2 AND status = 'offered' AND organisation_id = $3
+		 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
+		newStatus, id, currentOrgID,
+	).Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
+		&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusConflict, "booking not found, or not currently offered")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to record response")
+		return
+	}
+
+	if err := a.invalidateBookingResponseTokens(r.Context(), b.ID); err != nil {
+		log.Printf("record booking response: invalidating response tokens: %v", err)
+	}
+
+	if newStatus == models.BookingStatusPencilled {
+		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
+		if ctxErr == nil {
+			callTimeText := "TBC"
+			if ctx.CallTime != nil {
+				callTimeText = *ctx.CallTime
+			}
+			subject, body := notify.RenderBookingPencilled(ctx.RoleName, ctx.JobName, ctx.DatesText, ctx.Venue, callTimeText, crewCTAURL("/bookings/"+b.ID))
+			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingPencilled,
+				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, b)
@@ -428,15 +507,63 @@ func (a *API) UpdateBooking(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, b)
 }
 
-// ConfirmBooking is the scheduler directly confirming a booking (as opposed
-// to a crew member accepting an offer — see CrewRespondToOffer).
+// ConfirmBooking is the scheduler directly confirming a booking (Confirm or
+// Confirm Everyone — the latter is just the frontend calling this once per
+// pending booking, no separate bulk endpoint) — as opposed to a crew
+// member accepting an offer — see RespondToOffer.
+//
+// Addendum v3 §1: for a freelancer, Confirmed is only reached from
+// Pencilled (Offered -> Confirmed directly is not a valid transition once
+// someone actually has to say yes first) — staff are unaffected, since
+// this whole state-machine addition is scoped to freelancers (see
+// CreateBooking's own direct-confirm-staff comment). confirmed_by/
+// response_channel are set for both personas though: any press of Confirm
+// is a scheduler action worth recording, regardless of whose booking it is.
 func (a *API) ConfirmBooking(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var b models.Booking
+	userID, _ := staffClaimsFromContext(r)
+
+	var status models.BookingStatus
+	var employmentType models.EmploymentType
 	err := a.DB.QueryRow(r.Context(),
-		`UPDATE bookings SET status = 'confirmed', confirmed_at = now() WHERE id = $1 AND organisation_id = $2
-		 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
+		`SELECT b.status, p.employment_type FROM bookings b JOIN people p ON p.id = b.person_id WHERE b.id = $1 AND b.organisation_id = $2`,
 		id, currentOrgID,
+	).Scan(&status, &employmentType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to confirm booking")
+		return
+	}
+
+	if employmentType == models.EmploymentTypeFreelancer && status != models.BookingStatusPencilled {
+		if status == models.BookingStatusConfirmed {
+			// Idempotent re-confirm (e.g. Confirm Everyone re-run, or a
+			// double-click) — same end state, no re-fire, no error.
+			var b models.Booking
+			if err := a.DB.QueryRow(r.Context(),
+				`SELECT id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes FROM bookings WHERE id = $1`,
+				id,
+			).Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
+				&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to confirm booking")
+				return
+			}
+			writeJSON(w, http.StatusOK, b)
+			return
+		}
+		writeError(w, http.StatusConflict, "a freelancer booking must be pencilled before it can be confirmed")
+		return
+	}
+
+	var b models.Booking
+	err = a.DB.QueryRow(r.Context(),
+		`UPDATE bookings SET status = 'confirmed', confirmed_at = now(), confirmed_by = $1, response_channel = 'scheduler_manual'
+		 WHERE id = $2 AND organisation_id = $3
+		 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
+		userID, id, currentOrgID,
 	).Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
 		&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -446,6 +573,10 @@ func (a *API) ConfirmBooking(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to confirm booking")
 		return
+	}
+
+	if err := a.invalidateBookingResponseTokens(r.Context(), b.ID); err != nil {
+		log.Printf("confirm booking: invalidating response tokens: %v", err)
 	}
 
 	ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
@@ -495,6 +626,10 @@ func (a *API) CancelBooking(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to cancel booking")
 		return
+	}
+
+	if err := a.invalidateBookingResponseTokens(r.Context(), b.ID); err != nil {
+		log.Printf("cancel booking: invalidating response tokens: %v", err)
 	}
 
 	if previousStatus != models.BookingStatusPencilled {

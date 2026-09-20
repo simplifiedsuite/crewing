@@ -302,6 +302,19 @@ export interface Booking {
   // before this feature existed and never since updated — treat that the
   // same as full coverage, not zero days (see BookingDaysBadge).
   shift_dates?: string[]
+  // response_channel/confirmed_by — Addendum v3 §2. Null until an actual
+  // response has been recorded (either path) — see backend's own comment
+  // on ConfirmBooking/RecordBookingResponse/RespondToOffer for exactly
+  // when each is set.
+  response_channel?: 'self_service' | 'scheduler_manual'
+  confirmed_by?: string
+  // employment_type — only present on ListBookingsForRequirement's
+  // response (joined from Person), same "one extra endpoint-specific
+  // field" pattern as first_name/last_name above. Planner's BookedPersonRow
+  // needs it to gate Confirm (freelancer: pencilled only, per Addendum v3
+  // §1) and to show the "record a phone response" actions (freelancer +
+  // offered only) correctly — staff are unaffected either way.
+  employment_type?: 'staff' | 'freelancer'
 }
 
 export interface CrewBooking extends Booking {

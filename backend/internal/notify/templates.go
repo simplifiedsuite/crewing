@@ -30,6 +30,21 @@ func RenderBookingConfirmed(role, jobName, dates, ctaURL string) (subject, body 
 	return subject, body
 }
 
+// RenderBookingPencilled — Addendum v3 §1/§4: the informal "you said yes"
+// hold notice, once a freelancer has responded (either path) but before a
+// scheduler presses Confirm. Deliberately more detailed inline than
+// RenderBookingOffered/RenderBookingConfirmed (which lean on "open Ralto
+// for details") — no rate, no buyout, no PDF, per the addendum's own
+// explicit exclusions for this one.
+func RenderBookingPencilled(role, jobName, dates, venue, callTime, ctaURL string) (subject, body string) {
+	subject = fmt.Sprintf("You're pencilled: %s on %s", role, jobName)
+	body = fmt.Sprintf(
+		`You're pencilled for %s on %s, %s at %s (call time %s). This is an informal hold — a scheduler will confirm once everything's settled. <a href="%s">Open Ralto for details</a>.`,
+		role, jobName, dates, venue, callTime, ctaURL,
+	)
+	return subject, body
+}
+
 func RenderBookingUpdated(jobName, changeDescription, ctaURL string) (subject, body string) {
 	subject = fmt.Sprintf("Update: %s", jobName)
 	body = fmt.Sprintf(`%s. <a href="%s">Open Ralto to review and acknowledge</a>.`, changeDescription, ctaURL)

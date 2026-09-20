@@ -29,6 +29,7 @@ import {
   X,
   AlertOctagon,
   Pencil,
+  PhoneOff,
   UserX,
   KeyRound,
   Link as LinkIcon,
@@ -88,6 +89,7 @@ import {
   offerBooking,
   cancelBooking,
   confirmBooking,
+  recordBookingResponse,
   updateBookingDays,
   updateBookingDateRange,
   useBookingsForRequirement,
@@ -1829,24 +1831,36 @@ function BookedPersonRow({
   booking,
   onConfirm,
   onCancel,
+  onRecordResponse,
   onDaysUpdated,
   dayLabels,
 }: {
   booking: Booking
   onConfirm: () => void
   onCancel: () => void
+  // onRecordResponse — Addendum v3 §3: a scheduler recording a freelancer's
+  // phone response to an outstanding offer ("pencil" = they said yes,
+  // "decline" = they said no). Only ever called from the freelancer +
+  // offered affordance below.
+  onRecordResponse: (response: 'pencil' | 'decline') => void
   onDaysUpdated: () => void
   // Testing feedback R — threaded through to BookingDaysBadge.
   dayLabels?: Record<string, string>
 }) {
   const meta = BOOKING_STATUS_ICON[booking.status] ?? BOOKING_STATUS_ICON.offered!
   const Icon = meta.Icon
-  // Confirm is only a legal transition from pencilled/offered — same guard
-  // "Confirm everyone" already applies via pendingBookings, since the
-  // backend's ConfirmBooking has no status check of its own (unlike
-  // DeleteBooking) and would happily re-confirm and re-email an already-
-  // confirmed or declined booking if asked to.
-  const canConfirm = booking.status === 'pencilled' || booking.status === 'offered'
+  // Confirm — Addendum v3 §1: for a freelancer, only a legal transition
+  // from Pencilled (they have to actually say yes first; Confirm no longer
+  // skips straight past an Offered ask). Staff are unaffected — they
+  // essentially never sit at Offered at all (CreateBooking upgrades them
+  // straight to Confirmed), but keep the old pencilled-or-offered
+  // allowance for the rare case they do (e.g. via Pencilled -> Offer).
+  const isFreelancer = booking.employment_type === 'freelancer'
+  const canConfirm = isFreelancer ? booking.status === 'pencilled' : booking.status === 'pencilled' || booking.status === 'offered'
+  // The scheduler-manual half of the offer response — same two outcomes
+  // (Pencilled/Declined) the self-service token/app paths produce, just
+  // recorded by hand. Only makes sense for an outstanding freelancer ask.
+  const canRecordResponse = isFreelancer && booking.status === 'offered'
   return (
     <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '4px 0' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
@@ -1858,6 +1872,24 @@ function BookedPersonRow({
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <BookingDateRangeEditor booking={booking} onUpdated={onDaysUpdated} />
         <BookingDaysBadge booking={booking} onUpdated={onDaysUpdated} dayLabels={dayLabels} />
+        {canRecordResponse && (
+          <>
+            <button
+              onClick={() => onRecordResponse('pencil')}
+              title="Record: they said yes (by phone/WhatsApp/in person) — pencils this booking"
+              style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 2, color: 'var(--ink-muted)', display: 'flex' }}
+            >
+              <Pencil size={13} />
+            </button>
+            <button
+              onClick={() => onRecordResponse('decline')}
+              title="Record: they said no (by phone/WhatsApp/in person) — declines this booking"
+              style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 2, color: 'var(--ink-muted)', display: 'flex' }}
+            >
+              <PhoneOff size={13} />
+            </button>
+          </>
+        )}
         {canConfirm && (
           <button
             onClick={onConfirm}
@@ -1892,6 +1924,7 @@ function JobRoleRow({
   onOpenInPlanner,
   onConfirmBooking,
   onCancelBooking,
+  onRecordBookingResponse,
   onDaysUpdated,
   onDeleteRequirement,
   onRemoveSlot,
@@ -1902,6 +1935,7 @@ function JobRoleRow({
   onOpenInPlanner: (req: JobRequirementWithCounts) => void
   onConfirmBooking: (bookingId: string) => void
   onCancelBooking: (bookingId: string) => void
+  onRecordBookingResponse: (bookingId: string, response: 'pencil' | 'decline') => void
   onDaysUpdated: () => void
   // Testing feedback item F: there was previously no way to remove a
   // whole role requirement, only individual people booked against it.
@@ -1949,7 +1983,15 @@ function JobRoleRow({
       {bookings.length > 0 && (
         <div style={{ borderTop: '1px solid var(--line)', paddingTop: 6, display: 'flex', flexDirection: 'column' }}>
           {bookings.map((b) => (
-            <BookedPersonRow key={b.id} booking={b} onConfirm={() => onConfirmBooking(b.id)} onCancel={() => onCancelBooking(b.id)} onDaysUpdated={onDaysUpdated} dayLabels={dayLabels} />
+            <BookedPersonRow
+              key={b.id}
+              booking={b}
+              onConfirm={() => onConfirmBooking(b.id)}
+              onCancel={() => onCancelBooking(b.id)}
+              onRecordResponse={(response) => onRecordBookingResponse(b.id, response)}
+              onDaysUpdated={onDaysUpdated}
+              dayLabels={dayLabels}
+            />
           ))}
         </div>
       )}
@@ -3642,6 +3684,14 @@ function JobsContent({
     })
   }
 
+  // Addendum v3 §3 — the scheduler-manual half of offer response.
+  async function handleRecordBookingResponse(bookingId: string, response: 'pencil' | 'decline') {
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await recordBookingResponse(bookingId, response)
+      await Promise.all([reloadSummaries(), reloadBookings(selected.requirements)])
+    })
+  }
+
   // Testing feedback item F — see JobRoleRow's own confirm step for the
   // cascade-delete warning; this just performs the delete once confirmed.
   async function handleDeleteRequirement(req: JobRequirementWithCounts) {
@@ -3974,6 +4024,7 @@ function JobsContent({
               onOpenInPlanner={(req) => onOpenRoleInPlanner(req.job_id, req.id)}
               onConfirmBooking={handleConfirmBooking}
               onCancelBooking={handleCancelBooking}
+              onRecordBookingResponse={handleRecordBookingResponse}
               onDaysUpdated={() => withPreservedScrollAndFocus(panelRef.current, () => reloadBookings(selected.requirements))}
               onDeleteRequirement={handleDeleteRequirement}
               onRemoveSlot={handleRemoveSlot}
@@ -4426,6 +4477,15 @@ function PlannerContent({
     })
   }
 
+  // Addendum v3 §3 — Planner's own copy of the scheduler-manual response
+  // action (see the Jobs tab's handleRecordBookingResponse for the other).
+  async function handleRecordResponseCurrentBooking(bookingId: string, response: 'pencil' | 'decline') {
+    await withPreservedScrollAndFocus(panelRef.current, async () => {
+      await recordBookingResponse(bookingId, response)
+      await Promise.all([reloadCandidates(), reloadSummaries(), reloadCurrentBookings()])
+    })
+  }
+
   if (!summary) {
     return <div style={{ flex: 1, padding: 32, fontFamily: 'var(--font)', color: 'var(--ink-muted)' }}>No jobs yet — create one to get started.</div>
   }
@@ -4468,6 +4528,7 @@ function PlannerContent({
                     booking={b}
                     onConfirm={() => handleConfirmCurrentBooking(b.id)}
                     onCancel={() => handleCancelCurrentBooking(b.id)}
+                    onRecordResponse={(response) => handleRecordResponseCurrentBooking(b.id, response)}
                     onDaysUpdated={reloadCurrentBookings}
                     dayLabels={dayLabels}
                   />

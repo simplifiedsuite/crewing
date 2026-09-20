@@ -165,6 +165,7 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Post("/{id}/offer", api.PromoteBookingToOffer)
 			r.Post("/{id}/confirm", api.ConfirmBooking)
 			r.Post("/{id}/cancel", api.CancelBooking)
+			r.Post("/{id}/respond", api.RecordBookingResponse)
 			r.Get("/{id}/shifts", api.ListBookingShifts)
 			r.Post("/{id}/shifts", api.AddBookingShift)
 			r.Delete("/{id}/shifts/{shiftId}", api.RemoveBookingShift)

@@ -667,6 +667,15 @@ export function confirmBooking(id: string) {
   return api.post<Booking>(`/bookings/${id}/confirm`)
 }
 
+// recordBookingResponse — Addendum v3 §3: a scheduler recording a
+// freelancer's phone/WhatsApp/in-person response to an outstanding offer,
+// as a first-class alternative to the self-service token/app flow, not a
+// fallback for it. Only valid from Offered — see RecordBookingResponse's
+// own comment server-side.
+export function recordBookingResponse(id: string, response: 'pencil' | 'decline') {
+  return api.post<Booking>(`/bookings/${id}/respond`, { response })
+}
+
 // usePerson — a single Person by id, for a call site that only has a
 // personId in scope (e.g. Planner's declined-follow-up) and needs a field
 // like employment_type that isn't worth threading through as a prop from

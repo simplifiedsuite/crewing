@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -74,20 +75,23 @@ func scanCrewBooking(rows pgx.Rows, b *crewBookingResponse) error {
 // b.status) is what actually fixes it — a job-level status/date filter, not
 // a booking-level one, matching what the report asked for.
 //
-// Pencilled — shown to staff only, per the product decision: a Pencil is a
-// soft hold, and freelancers make a real accept/decline decision through
-// the offer flow, so a Pencil should never look like something they've
-// already been asked about. Staff don't go through that offer/confirm
-// step at all (they can be allocated directly), so a Pencil is already
-// closer to their real working plan, with no separate moment where
-// they'd otherwise learn about it. Scoped with an EXISTS against the
-// caller's own employment_type rather than a second query, since it only
-// ever needs to gate this one added status value.
+// Pencilled — shown to staff always, and to a freelancer only once they've
+// actually responded. Originally "staff only, full stop" (a Pencil was
+// purely a scheduler's own provisional hold before any ask went out — a
+// freelancer seeing their own name informally pencilled, before anyone had
+// asked them, would be confusing at best). Addendum v3 changed what
+// Pencilled means for a freelancer: it's now also the informal-hold state
+// their own Accept lands on (they said yes, they got a "you're pencilled"
+// notice — see RespondToOffer/RecordBookingResponse/RespondToBookingOffer),
+// and that one very much should be visible to them. response_channel is
+// exactly the signal that tells the two apart: null means "scheduler's own
+// provisional hold, no ask sent" (still hidden); set means "a real response
+// actually happened" (now visible, freelancer or staff either way).
 func (a *API) ListMyBookings(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	rows, err := a.DB.Query(r.Context(),
 		crewBookingSelect+` WHERE b.person_id = $1 AND b.status NOT IN ('declined', 'cancelled') AND b.organisation_id = $2
-		                     AND (b.status != 'pencilled' OR EXISTS (
+		                     AND (b.status != 'pencilled' OR b.response_channel IS NOT NULL OR EXISTS (
 		                           SELECT 1 FROM people p WHERE p.id = $1 AND p.organisation_id = $2 AND p.employment_type = 'staff'
 		                         ))
 		                     AND j.status NOT IN ('complete', 'cancelled') AND j.end_date >= CURRENT_DATE
@@ -111,19 +115,19 @@ func (a *API) ListMyBookings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bookings)
 }
 
-// GetMyBooking mirrors ListMyBookings' own Pencilled-staff-only guard —
-// not reachable from the current UI (JobDetailScreen only ever opens a
-// booking already returned by ListMyBookings), but a direct API call
-// with a booking id a freelancer happened to already have (e.g. from an
-// Offered notification's link, if that same booking was later re-
-// pencilled) shouldn't be able to read a Pencilled booking's details
-// just because the list-level guard doesn't apply to a single-id lookup.
+// GetMyBooking mirrors ListMyBookings' own Pencilled visibility guard (see
+// its comment) — not reachable from the current UI (JobDetailScreen only
+// ever opens a booking already returned by ListMyBookings), but a direct
+// API call with a booking id a freelancer happened to already have
+// shouldn't be able to read a still-provisional (no response recorded)
+// Pencilled booking's details just because the list-level guard doesn't
+// apply to a single-id lookup.
 func (a *API) GetMyBooking(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 	rows, err := a.DB.Query(r.Context(),
 		crewBookingSelect+` WHERE b.id = $1 AND b.person_id = $2 AND b.organisation_id = $3
-		                     AND (b.status != 'pencilled' OR EXISTS (
+		                     AND (b.status != 'pencilled' OR b.response_channel IS NOT NULL OR EXISTS (
 		                           SELECT 1 FROM people p WHERE p.id = $2 AND p.organisation_id = $3 AND p.employment_type = 'staff'
 		                         ))`,
 		id, claims.PersonID, currentOrgID)
@@ -148,11 +152,20 @@ type respondToOfferRequest struct {
 	Response string `json:"response"` // "accept" | "decline"
 }
 
-// RespondToOffer is the crew-side half of the offer -> accept/decline state
-// machine (CreateBooking on the staff side creates the offer). Accepting
-// sets status=confirmed + confirmed_at and fires booking_confirmed — per
-// the templates doc, that trigger covers "an offer is accepted, or a
-// scheduler directly confirms" as the same event either way.
+// RespondToOffer is the crew-side (logged-in) half of the offer response —
+// alongside, not instead of, the token-based public flow the actual offer
+// email now uses (RespondToBookingOffer in booking_response_tokens.go): a
+// freelancer who happens to be logged into the crew app can respond here
+// directly rather than via the emailed link, and both must produce the
+// same end state.
+//
+// Addendum v3 §1: for a freelancer, Accept lands on Pencilled (an
+// informal hold — a scheduler presses Confirm separately, once terms are
+// settled), not Confirmed directly. Staff are structurally never Offered
+// in the first place (CreateBooking upgrades them straight to Confirmed at
+// creation — see its own comment), so the Confirmed branch below is dead
+// code for them today, kept only so this doesn't silently misbehave if
+// that invariant ever changes.
 func (a *API) RespondToOffer(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	id := chi.URLParam(r, "id")
@@ -162,20 +175,30 @@ func (a *API) RespondToOffer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	var newStatus models.BookingStatus
-	switch req.Response {
-	case "accept":
-		newStatus = models.BookingStatusConfirmed
-	case "decline":
-		newStatus = models.BookingStatusDeclined
-	default:
+	if req.Response != "accept" && req.Response != "decline" {
 		writeError(w, http.StatusBadRequest, "response must be accept or decline")
 		return
 	}
 
+	var employmentType models.EmploymentType
+	if err := a.DB.QueryRow(r.Context(), `SELECT employment_type FROM people WHERE id = $1`, claims.PersonID).Scan(&employmentType); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to respond to offer")
+		return
+	}
+
+	var newStatus models.BookingStatus
+	switch {
+	case req.Response == "decline":
+		newStatus = models.BookingStatusDeclined
+	case employmentType == models.EmploymentTypeFreelancer:
+		newStatus = models.BookingStatusPencilled
+	default:
+		newStatus = models.BookingStatusConfirmed
+	}
+
 	var b models.Booking
 	err := a.DB.QueryRow(r.Context(),
-		`UPDATE bookings SET status = $1, responded_at = now(),
+		`UPDATE bookings SET status = $1, responded_at = now(), response_channel = 'self_service',
 		        confirmed_at = CASE WHEN $1 = 'confirmed' THEN now() ELSE confirmed_at END
 		 WHERE id = $2 AND person_id = $3 AND status = 'offered' AND organisation_id = $4
 		 RETURNING id, job_requirement_id, person_id, status, start_date, end_date, call_time, rate_override, offered_at, responded_at, confirmed_at, notes`,
@@ -191,11 +214,27 @@ func (a *API) RespondToOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if newStatus == models.BookingStatusConfirmed {
+	if err := a.invalidateBookingResponseTokens(r.Context(), b.ID); err != nil {
+		log.Printf("respond to offer: invalidating response tokens: %v", err)
+	}
+
+	switch newStatus {
+	case models.BookingStatusConfirmed:
 		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 		if ctxErr == nil {
 			subject, body := notify.RenderBookingConfirmed(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/bookings/"+b.ID))
 			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingConfirmed,
+				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+		}
+	case models.BookingStatusPencilled:
+		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
+		if ctxErr == nil {
+			callTimeText := "TBC"
+			if ctx.CallTime != nil {
+				callTimeText = *ctx.CallTime
+			}
+			subject, body := notify.RenderBookingPencilled(ctx.RoleName, ctx.JobName, ctx.DatesText, ctx.Venue, callTimeText, crewCTAURL("/bookings/"+b.ID))
+			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingPencilled,
 				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
 		}
 	}
@@ -207,9 +246,9 @@ func (a *API) RespondToOffer(w http.ResponseWriter, r *http.Request) {
 // member's own booking's Job — JobContact itself is a staff-managed
 // resource (/api/jobs/{id}/contacts), not reachable from a crew session,
 // so this is the narrow, ownership-checked read crew's JobDetail screen
-// actually needs. Same Pencilled-staff-only guard as GetMyBooking — a
-// freelancer shouldn't be able to learn a production contact's name/
-// email/phone for a booking they're not supposed to know exists.
+// actually needs. Same Pencilled visibility guard as GetMyBooking (see its
+// own comment) — a freelancer shouldn't learn a production contact's
+// details for a still-provisional hold they haven't actually responded to.
 func (a *API) GetMyBookingContact(w http.ResponseWriter, r *http.Request) {
 	claims, _ := middleware.CrewFromContext(r.Context())
 	bookingID := chi.URLParam(r, "id")
@@ -222,7 +261,7 @@ func (a *API) GetMyBookingContact(w http.ResponseWriter, r *http.Request) {
 		JOIN job_requirements jr ON jr.job_id = j.id
 		JOIN bookings b ON b.job_requirement_id = jr.id
 		WHERE b.id = $1 AND b.person_id = $2 AND b.organisation_id = $3
-		      AND (b.status != 'pencilled' OR EXISTS (
+		      AND (b.status != 'pencilled' OR b.response_channel IS NOT NULL OR EXISTS (
 		            SELECT 1 FROM people p WHERE p.id = $2 AND p.organisation_id = $3 AND p.employment_type = 'staff'
 		          ))
 		ORDER BY jc.name

@@ -10,6 +10,7 @@ import { CrewForgotPassword } from './pages/CrewForgotPassword'
 import { CrewResetPassword } from './pages/CrewResetPassword'
 import { StaffChangePassword } from './pages/StaffChangePassword'
 import { CrewChangePassword } from './pages/CrewChangePassword'
+import { BookingOfferResponse } from './pages/BookingOfferResponse'
 import { RaltoDesktopApp } from './pages/scheduler/RaltoDesktopApp'
 import { RaltoMobileApp } from './pages/scheduler/RaltoMobileApp'
 import { RaltoCrewApp } from './pages/crew/RaltoCrewApp'
@@ -90,6 +91,12 @@ export function App() {
           </CrewAuthProvider>
         }
       />
+      {/* Public, unauthenticated freelancer offer response (Addendum v3 §2)
+          — genuinely outside both auth trees above, not just the logged-out
+          branch of one of them, since a scheduler or staff session cookie
+          being present shouldn't change how this page behaves either. Must
+          come before the /* catch-all below, which would otherwise swallow it. */}
+      <Route path="/respond/:token" element={<BookingOfferResponse />} />
       <Route
         path="/*"
         element={
