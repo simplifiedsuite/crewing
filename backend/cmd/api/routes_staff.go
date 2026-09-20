@@ -198,12 +198,5 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Patch("/{id}/password", api.AdminResetPassword)
 			r.Delete("/{id}", api.DeleteUser)
 		})
-
-		// TEMPORARY — see debug_buyout_pdf.go's own comment. Remove once
-		// the buyout PDF is verified against real booking data.
-		r.Route("/debug", func(r chi.Router) {
-			r.Use(middleware.RequireAdmin)
-			r.Get("/buyout-pdf/{id}", api.DebugGetBuyoutPDF)
-		})
 	})
 }
