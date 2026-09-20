@@ -76,6 +76,15 @@ func main() {
 	r.Post("/api/auth/logout", api.Logout)
 	r.Post("/api/crew/auth/logout", api.CrewLogout)
 
+	// Self-service password reset (crew-first) — public/unauthenticated,
+	// same tier as login above, not under registerCrewRoutes' RequireCrewAuth
+	// tree. forgot-password gets a tighter limit than login: each request
+	// can trigger a real outbound email (and, unlike a wrong password, an
+	// attacker choosing the recipient), so it's worth capping harder against
+	// being used to mail-bomb someone else's inbox from this app.
+	r.With(middleware.RateLimit(6, time.Minute)).Post("/api/crew/auth/forgot-password", api.RequestCrewPasswordReset)
+	r.With(middleware.RateLimit(20, time.Minute)).Post("/api/crew/auth/reset-password", api.ConfirmCrewPasswordReset)
+
 	registerStaffRoutes(r, api)
 	registerCrewRoutes(r, api)
 

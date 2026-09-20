@@ -18,7 +18,7 @@ services:
       - key: SENDGRID_API_KEY
         sync: false
       - key: SENDGRID_FROM_EMAIL
-        value: no-reply@crewing.simplifiedsuite.io
+        value: no-reply@simplifiedsuite.io
       - key: SENDGRID_FROM_NAME
         value: Crewing
       - key: ICAL_FEED_BASE_URL

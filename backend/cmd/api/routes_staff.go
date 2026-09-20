@@ -197,12 +197,5 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Patch("/{id}/password", api.AdminResetPassword)
 			r.Delete("/{id}", api.DeleteUser)
 		})
-
-		// TEMPORARY — see debug_test_email.go's own comment. Remove once
-		// SendGrid delivery is confirmed working.
-		r.Route("/debug", func(r chi.Router) {
-			r.Use(middleware.RequireAdmin)
-			r.Post("/send-test-email", api.SendTestEmail)
-		})
 	})
 }

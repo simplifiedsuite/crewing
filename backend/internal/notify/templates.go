@@ -59,3 +59,17 @@ func RenderAvailabilityRequest(dates, location, ctaURL string) (subject, body st
 	)
 	return subject, body
 }
+
+// RenderPasswordReset — self-service "Forgot password" (crew-first, see
+// ralto_password_reset_v1). Deliberately outside the six triggers above:
+// a reset link isn't an in-app notification a person can toggle off via
+// notification_channels, so it's sent directly via notify.Client.SendEmail
+// rather than through notifyPerson.
+func RenderPasswordReset(resetURL string) (subject, body string) {
+	subject = "Reset your Crewing password"
+	body = fmt.Sprintf(
+		`We received a request to reset your Crewing password. <a href="%s">Choose a new password</a>. This link expires in 1 hour and can only be used once. If you didn't request this, you can safely ignore this email.`,
+		resetURL,
+	)
+	return subject, body
+}

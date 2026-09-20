@@ -4,6 +4,8 @@ import { StaffAuthProvider, useStaffAuth } from './context/StaffAuthContext'
 import { CrewAuthProvider, useCrewAuth } from './context/CrewAuthContext'
 import { StaffLogin } from './pages/StaffLogin'
 import { CrewLogin } from './pages/CrewLogin'
+import { CrewForgotPassword } from './pages/CrewForgotPassword'
+import { CrewResetPassword } from './pages/CrewResetPassword'
 import { StaffChangePassword } from './pages/StaffChangePassword'
 import { CrewChangePassword } from './pages/CrewChangePassword'
 import { RaltoDesktopApp } from './pages/scheduler/RaltoDesktopApp'
@@ -46,7 +48,20 @@ function CrewShell() {
   const { person, loading } = useCrewAuth()
 
   if (loading) return null
-  if (!person) return <CrewLogin />
+  if (!person) {
+    // The only place under /crew/* that needs real path-based routing —
+    // everywhere else (RaltoCrewApp's own tabs) is state-driven, not
+    // URL-driven, but a forgot/reset-password screen has to be reachable
+    // pre-session and, for reset, deep-linkable with a token in the query
+    // string, so it needs an actual route rather than app state.
+    return (
+      <Routes>
+        <Route path="forgot-password" element={<CrewForgotPassword />} />
+        <Route path="reset-password" element={<CrewResetPassword />} />
+        <Route path="*" element={<CrewLogin />} />
+      </Routes>
+    )
+  }
   if (person.must_change_password) return <CrewChangePassword />
   return <RaltoCrewApp />
 }

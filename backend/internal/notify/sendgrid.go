@@ -62,18 +62,6 @@ type sendGridContent struct {
 	Value string `json:"value"`
 }
 
-// DebugInfo — temporary, for diagnosing the first-ever SendGrid 403 (see
-// the debug test-email endpoint). Never returns the full key: just enough
-// (length + a short prefix) to confirm the right value actually made it
-// into the process env, without logging or echoing back a usable secret.
-func (c *Client) DebugInfo() (fromEmail, fromName, keyPrefix string, keyLen int) {
-	prefix := c.apiKey
-	if len(prefix) > 6 {
-		prefix = prefix[:6]
-	}
-	return c.fromEmail, c.fromName, prefix, len(c.apiKey)
-}
-
 // SendEmail sends a single HTML email. Errors are returned, not swallowed —
 // callers decide whether a failed send should also mark the
 // NotificationDelivery row as failed (it should).
