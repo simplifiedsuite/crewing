@@ -8,6 +8,8 @@ import type {
   Booking,
   CandidateGroups,
   Client,
+  ContractRoleDefault,
+  ContractWithRoleDefaults,
   CoreClient,
   CoreContract,
   CoreJob,
@@ -105,6 +107,25 @@ export function updateRole(id: string, input: { name: string; category?: string 
 
 export function deleteRole(id: string) {
   return api.delete<{ ok: boolean }>(`/roles/${id}`)
+}
+
+// Contract-level defaults (crew roles) — a starting-point template for a
+// new Job's requirements, applied when it's created under that Contract.
+
+export function listContractsWithRoleDefaults() {
+  return api.get<ContractWithRoleDefaults[]>('/contract-role-defaults/contracts')
+}
+
+export function listContractRoleDefaults(sharedContractId: string) {
+  return api.get<ContractRoleDefault[]>(`/contract-role-defaults?shared_contract_id=${encodeURIComponent(sharedContractId)}`)
+}
+
+export function upsertContractRoleDefault(input: { shared_contract_id: string; shared_contract_name: string; role_id: string; quantity: number }) {
+  return api.post<ContractRoleDefault>('/contract-role-defaults', input)
+}
+
+export function deleteContractRoleDefault(id: string) {
+  return api.delete<{ ok: boolean }>(`/contract-role-defaults/${id}`)
 }
 
 // listCoreVehicles backs the Job "Assign a vehicle" picker — live per

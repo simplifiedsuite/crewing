@@ -60,6 +60,10 @@ import {
   useResourceCalendarWindow,
   useProjects,
   useRoles,
+  listContractsWithRoleDefaults,
+  listContractRoleDefaults,
+  upsertContractRoleDefault,
+  deleteContractRoleDefault,
   createJob,
   updateJob,
   updateJobStatus,
@@ -130,6 +134,8 @@ import type {
   BookingStatus,
   Candidate,
   Client,
+  ContractRoleDefault,
+  ContractWithRoleDefaults,
   CoreClient,
   CoreContract,
   CoreJob,
@@ -2786,6 +2792,38 @@ function JobCreateForm({
   function removeRequirement(key: number) {
     setRequirements((rows) => rows.filter((r) => r.key !== key))
   }
+
+  // Contract defaults (Settings > Contract defaults) — pre-populate this
+  // new Job's role requirements from the picked Contract's stored
+  // defaults, if any exist. Starting point only: applies solely while
+  // requirements is still empty, so it never overwrites anything the
+  // scheduler has already added by hand, and never runs at all when
+  // editing an existing Job — a Contract's defaults changing later must
+  // not retroactively change Jobs already created under it. Negative keys
+  // avoid any collision with addRequirement's own nextKey counter, which
+  // starts at 0.
+  useEffect(() => {
+    if (editingJob || !sharedContractId || requirements.length > 0) return
+    let cancelled = false
+    listContractRoleDefaults(sharedContractId).then((defaults) => {
+      if (cancelled || defaults.length === 0) return
+      setRequirements((rows) =>
+        rows.length > 0
+          ? rows
+          : defaults.map((d, i) => ({
+              key: -1 - i,
+              role_id: d.role_id,
+              quantity_required: String(d.quantity),
+              start_date: startDate,
+              end_date: endDate,
+            })),
+      )
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharedContractId, editingJob])
 
   function addContact() {
     setContacts((rows) => [...rows, { key: nextKey, name: '', role_title: '', email: '', phone: '' }])
@@ -6947,6 +6985,238 @@ function RolesSection({ roles, reload }: { roles: Role[]; reload: () => void }) 
   )
 }
 
+// ContractRoleDefaultsSection — a starting-point crew role/quantity
+// template per Core Contract, applied to a new Job's requirements at
+// creation (see JobCreateForm's ContractPicker onChange). Purely a
+// template: editing/removing defaults here never touches Jobs already
+// created from them. Two-step picker (Client, then Contract) since Core's
+// own /api/contracts requires a client_id — same reasoning ContractPicker
+// itself already documents. "Contracts with defaults set" lets a
+// scheduler jump straight back into one without re-picking client+contract.
+function ContractRoleDefaultsSection({ roles }: { roles: Role[] }) {
+  const [contractsWithDefaults, setContractsWithDefaults] = useState<ContractWithRoleDefaults[]>([])
+  const [coreClients, setCoreClients] = useState<CoreClient[]>([])
+  const [selectedClientId, setSelectedClientId] = useState('')
+  const [selectedContract, setSelectedContract] = useState<{ id: string; name: string } | undefined>(undefined)
+  const [defaults, setDefaults] = useState<ContractRoleDefault[] | undefined>(undefined)
+  const [editingId, setEditingId] = useState<string | undefined>(undefined)
+  const [editingQty, setEditingQty] = useState('1')
+  const [addingRoleId, setAddingRoleId] = useState('')
+  const [addingQty, setAddingQty] = useState('1')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  const reloadContractsWithDefaults = useCallback(() => {
+    listContractsWithRoleDefaults().then(setContractsWithDefaults)
+  }, [])
+  useEffect(reloadContractsWithDefaults, [reloadContractsWithDefaults])
+
+  useEffect(() => {
+    listCoreClients()
+      .then(setCoreClients)
+      .catch(() => {})
+  }, [])
+
+  const reloadDefaults = useCallback((contractId: string) => {
+    listContractRoleDefaults(contractId).then(setDefaults)
+  }, [])
+
+  useEffect(() => {
+    if (selectedContract) reloadDefaults(selectedContract.id)
+  }, [selectedContract, reloadDefaults])
+
+  function chooseExisting(c: ContractWithRoleDefaults) {
+    setSelectedContract({ id: c.shared_contract_id, name: c.shared_contract_name })
+    setDefaults(undefined)
+  }
+
+  function changeContract() {
+    setSelectedContract(undefined)
+    setSelectedClientId('')
+    setDefaults(undefined)
+    setEditingId(undefined)
+  }
+
+  async function addDefault() {
+    if (!selectedContract || !addingRoleId) return
+    setSaving(true)
+    setError(undefined)
+    try {
+      await upsertContractRoleDefault({
+        shared_contract_id: selectedContract.id,
+        shared_contract_name: selectedContract.name,
+        role_id: addingRoleId,
+        quantity: Number(addingQty) || 1,
+      })
+      setAddingRoleId('')
+      setAddingQty('1')
+      reloadDefaults(selectedContract.id)
+      reloadContractsWithDefaults()
+    } catch {
+      setError('Could not save that default.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveQuantity(d: ContractRoleDefault) {
+    if (!selectedContract) return
+    setSaving(true)
+    setError(undefined)
+    try {
+      await upsertContractRoleDefault({
+        shared_contract_id: selectedContract.id,
+        shared_contract_name: selectedContract.name,
+        role_id: d.role_id,
+        quantity: Number(editingQty) || 1,
+      })
+      setEditingId(undefined)
+      reloadDefaults(selectedContract.id)
+    } catch {
+      setError('Could not update that default.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function removeDefault(id: string) {
+    if (!selectedContract) return
+    await deleteContractRoleDefault(id)
+    reloadDefaults(selectedContract.id)
+    reloadContractsWithDefaults()
+  }
+
+  const availableRoles = roles.filter((r) => !defaults?.some((d) => d.role_id === r.id))
+
+  return (
+    <div>
+      <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 4 }}>Contract defaults</div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink-muted)', marginBottom: 14 }}>
+        A starting-point set of crew roles applied to a new Job created under a Contract — fully editable on that Job afterward, and changing these later never affects Jobs already created.
+      </div>
+
+      {!selectedContract && contractsWithDefaults.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontFamily: 'var(--font)', fontSize: 11.5, color: 'var(--ink-muted)', marginBottom: 6 }}>Contracts with defaults set</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {contractsWithDefaults.map((c) => (
+              <button
+                key={c.shared_contract_id}
+                onClick={() => chooseExisting(c)}
+                style={{ ...settingsRowStyle, textAlign: 'left', cursor: 'pointer', fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink)' }}
+              >
+                <span style={{ flex: 1, fontWeight: 600 }}>{c.shared_contract_name}</span>
+                <span style={{ color: 'var(--ink-muted)', fontSize: 12.5 }}>
+                  {c.default_count} role{c.default_count === 1 ? '' : 's'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!selectedContract && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <label style={settingsLabelStyle}>
+            Client
+            <select
+              value={selectedClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              style={settingsInputStyle}
+            >
+              <option value="">Select a client…</option>
+              {coreClients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedClientId && (
+            <ContractPicker key={selectedClientId} coreClientId={selectedClientId} value={undefined} onChange={(c) => c && setSelectedContract(c)} />
+          )}
+        </div>
+      )}
+
+      {selectedContract && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{selectedContract.name}</span>
+            <button onClick={changeContract} style={settingsCancelButtonStyle}>
+              Change contract
+            </button>
+          </div>
+
+          {defaults === undefined ? (
+            <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>Loading…</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+              {defaults.map((d) =>
+                editingId === d.id ? (
+                  <div key={d.id} style={settingsRowStyle}>
+                    <div style={{ flex: 1, fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink)' }}>{d.role_name}</div>
+                    <input
+                      type="number"
+                      min={1}
+                      value={editingQty}
+                      onChange={(e) => setEditingQty(e.target.value)}
+                      style={{ ...settingsInputStyle, width: 64 }}
+                    />
+                    <button onClick={() => setEditingId(undefined)} style={{ ...settingsCancelButtonStyle, padding: '5px 10px' }}>
+                      Cancel
+                    </button>
+                    <button onClick={() => saveQuantity(d)} disabled={saving} style={{ ...settingsPrimaryButtonStyle, padding: '5px 10px', opacity: saving ? 0.7 : 1 }}>
+                      Save
+                    </button>
+                  </div>
+                ) : (
+                  <div key={d.id} style={settingsRowStyle}>
+                    <div style={{ flex: 1, fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink)' }}>
+                      <span style={{ fontWeight: 600 }}>{d.role_name}</span>
+                      {d.role_category && <span style={{ color: 'var(--ink-muted)' }}> · {d.role_category}</span>}
+                      <span style={{ color: 'var(--ink-muted)' }}> · qty {d.quantity}</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setEditingId(d.id)
+                        setEditingQty(String(d.quantity))
+                      }}
+                      title="Edit quantity"
+                      style={settingsIconButtonStyle}
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => removeDefault(d.id)} title="Remove default" style={settingsIconButtonStyle}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ),
+              )}
+              {defaults.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No role defaults set for this Contract yet.</div>}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select value={addingRoleId} onChange={(e) => setAddingRoleId(e.target.value)} style={{ ...settingsInputStyle, flex: 1 }}>
+              <option value="">Select a role…</option>
+              {availableRoles.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+            <input type="number" min={1} value={addingQty} onChange={(e) => setAddingQty(e.target.value)} style={{ ...settingsInputStyle, width: 64 }} />
+            <button onClick={addDefault} disabled={saving || !addingRoleId} style={{ ...settingsAddButtonStyle, opacity: saving || !addingRoleId ? 0.7 : 1 }}>
+              <Plus size={13} /> Add
+            </button>
+          </div>
+          {error && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>{error}</div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 function OvertimeRuleForm({ rule, onCancel, onSaved }: { rule?: OvertimeRule; onCancel: () => void; onSaved: () => void }) {
   const [name, setName] = useState(rule?.name ?? '')
@@ -7309,11 +7579,12 @@ function DakboardFeedSection() {
   )
 }
 
-type SettingsTabKey = 'roles' | 'overtime' | 'skills' | 'dakboard'
+type SettingsTabKey = 'roles' | 'overtime' | 'skills' | 'contract-defaults' | 'dakboard'
 const SETTINGS_TABS: { key: SettingsTabKey; label: string }[] = [
   { key: 'roles', label: 'Roles' },
   { key: 'overtime', label: 'Overtime rules' },
   { key: 'skills', label: 'Skills' },
+  { key: 'contract-defaults', label: 'Contract defaults' },
   { key: 'dakboard', label: 'Dakboard feed' },
 ]
 
@@ -7337,7 +7608,7 @@ export function SettingsContent({
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
       <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginBottom: 4 }}>Settings</div>
-      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, skills — plus the shared Dakboard feed link.</div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, skills, Contract defaults — plus the shared Dakboard feed link.</div>
 
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 20 }}>
         {SETTINGS_TABS.map((t) => (
@@ -7366,6 +7637,7 @@ export function SettingsContent({
         {tab === 'roles' && <RolesSection roles={roles} reload={reloadRoles} />}
         {tab === 'overtime' && <OvertimeRulesSection rules={overtimeRules} reload={reloadOvertimeRules} />}
         {tab === 'skills' && <SkillsSection skills={skills} reload={reloadSkills} />}
+        {tab === 'contract-defaults' && <ContractRoleDefaultsSection roles={roles} />}
         {tab === 'dakboard' && <DakboardFeedSection />}
       </div>
     </div>

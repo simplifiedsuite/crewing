@@ -62,6 +62,15 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Delete("/{id}", api.DeleteRole)
 		})
 
+		// Contract-level defaults (crew roles) — a starting-point template
+		// for a new Job's requirements. See internal/handlers/contract_role_defaults.go.
+		r.Route("/contract-role-defaults", func(r chi.Router) {
+			r.Get("/contracts", api.ListContractsWithRoleDefaults)
+			r.Get("/", api.ListContractRoleDefaults)
+			r.Post("/", api.UpsertContractRoleDefault)
+			r.Delete("/{id}", api.DeleteContractRoleDefault)
+		})
+
 		r.Route("/projects", func(r chi.Router) {
 			r.Get("/", api.ListProjects)
 			r.Post("/", api.CreateProject)

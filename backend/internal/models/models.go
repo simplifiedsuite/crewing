@@ -194,6 +194,31 @@ type Role struct {
 	Category *string `json:"category,omitempty"`
 }
 
+// ContractRoleDefault is a starting-point crew role/quantity template for
+// a Core Contract, applied to a new Job's requirements when it's created
+// under that Contract. See migrations/0031_contract_role_defaults.sql.
+type ContractRoleDefault struct {
+	ID                 string    `json:"id"`
+	SharedContractID   string    `json:"shared_contract_id"`
+	SharedContractName string    `json:"shared_contract_name"`
+	RoleID             string    `json:"role_id"`
+	Quantity           int       `json:"quantity"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	// Populated on joined list reads only.
+	RoleName     *string `json:"role_name,omitempty"`
+	RoleCategory *string `json:"role_category,omitempty"`
+}
+
+// ContractWithRoleDefaults is one row of the "browse Contracts that
+// already have defaults set" list — lets a scheduler find one without
+// already knowing its name.
+type ContractWithRoleDefaults struct {
+	SharedContractID   string `json:"shared_contract_id"`
+	SharedContractName string `json:"shared_contract_name"`
+	DefaultCount       int    `json:"default_count"`
+}
+
 // JobVehicle is a Job's assignment to one of Core's shared Vehicles (see
 // Core's migrations/0009_vehicles.sql) — distinct from
 // Person.VehicleRegistration, which is a crew member's own personal car.

@@ -155,6 +155,28 @@ export interface Role {
   category?: string
 }
 
+// A Contract's starting-point crew role/quantity template, applied to a
+// new Job's requirements when it's created under that Contract. role_name/
+// role_category are populated on joined list reads only.
+export interface ContractRoleDefault {
+  id: string
+  shared_contract_id: string
+  shared_contract_name: string
+  role_id: string
+  quantity: number
+  created_at: string
+  updated_at: string
+  role_name?: string
+  role_category?: string
+}
+
+// One row of the "browse Contracts that already have defaults set" list.
+export interface ContractWithRoleDefaults {
+  shared_contract_id: string
+  shared_contract_name: string
+  default_count: number
+}
+
 export interface OvertimeRule {
   id: string
   name: string
