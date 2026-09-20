@@ -4937,6 +4937,22 @@ function ResourceCalendarContent({
   const modeChangeAnchorIndexRef = useRef<number | null>(null)
   const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[today.getMonth()]} ${today.getFullYear()}`)
 
+  // Regression fix — freelancer row filtering: useResourceCalendarWindow's
+  // `rows` covers the entire *loaded* range (rangeStart..rangeEnd), which
+  // only ever grows across a scroll session and never shrinks. Before
+  // continuous scroll, the fetched window and the visible window were the
+  // same thing (prev/next replaced the whole fetch), so filtering
+  // freelancers server-side by the requested range was equivalent to
+  // filtering by what's on screen. Now they've diverged: a freelancer
+  // fetched into `rows` while scrolled past their booking stays in the
+  // merged map forever, even once scrolled far away from it. This re-derives
+  // which dates are actually on screen right now (from scrollLeft/clientWidth,
+  // same as the month-label tracking below) and re-applies the "freelancer
+  // needs activity in the visible window" rule against that, client-side —
+  // no extra fetch, since `rows` already has every booking/availability
+  // loaded this session.
+  const [viewportRange, setViewportRange] = useState({ start: todayISOString, end: todayISOString })
+
   // Testing feedback item D: a second scheduler's changes (a new booking,
   // a newly-crewed Job) weren't visible here until a manual page refresh —
   // a real double-booking risk with more than one scheduler working at
@@ -4950,9 +4966,26 @@ function ResourceCalendarContent({
     return () => clearInterval(id)
   }, [reload])
 
+  // Shared by handleScroll (organic scrolling) and by the programmatic
+  // jumps below (scrollToToday, the mode-change restore) — those assign
+  // el.scrollLeft directly, which fires its own native 'scroll' event, so
+  // calling this unconditionally at the top of handleScroll (before the
+  // suppressScrollHandlingRef gate) keeps viewportRange correct after a
+  // suppressed jump too, without needing a second call site per jump.
+  function updateViewportRange(el: HTMLDivElement) {
+    if (dates.length === 0) return
+    const startIndex = Math.max(0, Math.min(dates.length - 1, Math.floor(el.scrollLeft / colWidth)))
+    const endIndex = Math.max(0, Math.min(dates.length - 1, Math.floor((el.scrollLeft + el.clientWidth - 1) / colWidth)))
+    const start = dateISO(dates[startIndex])
+    const end = dateISO(dates[endIndex])
+    setViewportRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }))
+  }
+
   function handleScroll() {
     const el = scrollRef.current
-    if (!el || suppressScrollHandlingRef.current) return
+    if (!el) return
+    updateViewportRange(el)
+    if (suppressScrollHandlingRef.current) return
     const thresholdPx = TEAM_EDGE_THRESHOLD_DAYS * colWidth
     if (el.scrollLeft < thresholdPx && !expandingStartRef.current) {
       // Prepending days shifts everything to the right by the width just
@@ -5061,6 +5094,27 @@ function ResourceCalendarContent({
     }))
   }, [mode])
 
+  // Re-derives row inclusion against the current on-screen date range —
+  // see viewportRange's own comment for why `rows` itself (the full loaded
+  // range) can't be used directly any more. Staff: unaffected, always
+  // shown, exactly as before. Freelancer: shown if explicitly added via
+  // search (matches the backend's own "?include= always wins" rule — the
+  // whole point of adding one by name is to check them regardless of
+  // whether they've got anything on right now) or if a booking/availability
+  // entry overlaps the visible window.
+  const visibleRows = useMemo(
+    () =>
+      rows.filter((row) => {
+        if (row.employment_type !== 'freelancer') return true
+        if (includeIds.includes(row.person_id)) return true
+        return (
+          row.bookings.some((b) => b.start_date <= viewportRange.end && b.end_date >= viewportRange.start) ||
+          row.availability.some((a) => a.start_date <= viewportRange.end && a.end_date >= viewportRange.start)
+        )
+      }),
+    [rows, viewportRange, includeIds],
+  )
+
   // Explicitly-added rows are session state only, never persisted — see
   // addendum v2 §1's "no pinning is persisted in v1."
   const searchResults = useMemo(() => {
@@ -5161,7 +5215,7 @@ function ResourceCalendarContent({
             )
           })}
 
-          {rows.map((row) => (
+          {visibleRows.map((row) => (
             <Fragment key={row.person_id}>
               <div
                 style={{
@@ -5209,7 +5263,7 @@ function ResourceCalendarContent({
             </Fragment>
           ))}
 
-          {!loading && rows.length === 0 && (
+          {!loading && visibleRows.length === 0 && (
             <div style={{ gridColumn: '1 / -1', padding: '32px 0', textAlign: 'center', fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>
               No one to show for this range — staff appear here always; freelancers show up once they have a booking or availability entry.
             </div>
