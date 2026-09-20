@@ -1227,7 +1227,7 @@ function JobListRow({ summary, client, selected, fallbackIndex, onOpen }: { summ
   )
 }
 
-function InfoRow({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: string; value: string }) {
+function InfoRow({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: string; value: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 12, padding: '12px 0' }}>
       <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--primary-surface)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -1238,6 +1238,32 @@ function InfoRow({ icon: Icon, label, value }: { icon: typeof CalendarDays; labe
         <div style={{ fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink)', marginTop: 1 }}>{value}</div>
       </div>
     </div>
+  )
+}
+
+// venueMapsQuery/venueMapsURL/VenueValue — same "open in Maps" link as the
+// crew app's own (RaltoCrewApp.tsx) and the scheduler mobile app's
+// (RaltoMobileApp.tsx), reused shape rather than a shared component since
+// none of these three apps share components with each other. Google's
+// universal maps search URL, matching the other two. Prefers the venue's
+// own address/city/country (already on hand here via venuesList/venues —
+// no backend change needed) alongside its name; falls back to just the
+// name when there's no address on file, and to nothing at all when no
+// venue is set, so a job with none keeps today's plain "Not set" text.
+function venueMapsQuery(venue: Venue | undefined): string | undefined {
+  if (!venue) return undefined
+  return [venue.name, venue.address, venue.city, venue.country].filter(Boolean).join(', ')
+}
+function venueMapsURL(query: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
+}
+function VenueValue({ venue }: { venue: Venue | undefined }) {
+  const query = venueMapsQuery(venue)
+  if (!query || !venue) return <>Not set</>
+  return (
+    <a href={venueMapsURL(query)} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'underline' }}>
+      {venue.name}
+    </a>
   )
 }
 
@@ -3342,7 +3368,7 @@ function JobsContent({
 }: {
   summaries: JobSummary[]
   clients: Record<string, Client>
-  venues: Record<string, unknown>
+  venues: Record<string, Venue>
   venuesList: Venue[]
   reloadVenues: () => void
   projects: Project[]
@@ -3565,7 +3591,7 @@ function JobsContent({
   }
 
   const client = clients[selected.job.client_id]
-  const venueName = selected.job.venue_id ? (venues[selected.job.venue_id] as { name: string } | undefined)?.name : undefined
+  const venue = selected.job.venue_id ? venues[selected.job.venue_id] : undefined
   const primaryContact = contacts[0]
 
   return (
@@ -3732,7 +3758,7 @@ function JobsContent({
 
             <div style={{ display: 'flex', gap: 32, marginTop: 8, borderBottom: '1px solid var(--line)', paddingBottom: 4 }}>
               <InfoRow icon={CalendarDays} label="Dates" value={`${formatDate(selected.job.start_date)} – ${formatDate(selected.job.end_date)}`} />
-              <InfoRow icon={MapPin} label="Venue" value={venueName ?? 'Not set'} />
+              <InfoRow icon={MapPin} label="Venue" value={<VenueValue venue={venue} />} />
               <InfoRow icon={Phone} label="Production contact" value={primaryContact ? `${primaryContact.name}${primaryContact.phone ? ' · ' + primaryContact.phone : ''}` : 'Not yet assigned'} />
               {/* Only shown for Jobs actually linked to a shared Core Job (i.e.
                   fetched from Monday) — hand-created Jobs have no order_number
