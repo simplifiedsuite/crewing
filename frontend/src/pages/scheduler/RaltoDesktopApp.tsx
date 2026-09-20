@@ -971,6 +971,14 @@ function CalendarContent({
   const scrollRef = useRef<HTMLDivElement>(null)
   const todayRowRef = useRef<HTMLDivElement>(null)
   const monthDividerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  // Every week's own row, keyed by its ISO week-start — used only to
+  // restore scroll position across a Month/Week density change (see
+  // changeMode below). Row height isn't uniform here (it depends on
+  // job/event count, not just mode), so unlike Team's fixed column width
+  // this can't be fixed with pixel arithmetic — scrollIntoView on the
+  // actual week that was at the top is the reliable version.
+  const weekRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const modeChangeAnchorKeyRef = useRef<string | null>(null)
   const scrollHeightBeforeRef = useRef(0)
   const pendingCompensationRef = useRef(false)
   // Guards against a runaway chain of expansions: a scroll container fires
@@ -1056,10 +1064,20 @@ function CalendarContent({
     // No sticky positioning — just tracks whichever month divider is
     // nearest the top of the scroller, so the header label stays
     // meaningful while scrolling through a continuous run of months.
+    // Same "compare actual positions, not iteration order" fix as
+    // changeMode above — monthDividerRefs is a Map that grows via
+    // prepending earlier months, so Map iteration (insertion) order
+    // doesn't stay chronological, and "last matching one wins" would
+    // sometimes pick a stale divider instead of the true topmost one.
     const containerTop = el.getBoundingClientRect().top
     let current = visibleMonthLabel
+    let bestTop = -Infinity
     for (const [key, node] of monthDividerRefs.current) {
-      if (node.getBoundingClientRect().top - containerTop <= 40) current = key
+      const top = node.getBoundingClientRect().top - containerTop
+      if (top <= 40 && top > bestTop) {
+        bestTop = top
+        current = key
+      }
     }
     if (current !== visibleMonthLabel) setVisibleMonthLabel(current)
   }
@@ -1132,6 +1150,49 @@ function CalendarContent({
     scrollToToday()
   }
 
+  // Bug fix — found live-testing Team's identical issue and checking
+  // whether Calendar shared it: Month/Week changes row height (tall bars +
+  // inline text vs compact bars), so the week left unchanged at scrollTop
+  // silently became a different week once its own and every other row
+  // above it resized. Captures whichever week is currently at the top
+  // edge right before the mode changes, then scrolls back to that same
+  // week (not necessarily today) once the new row heights are in the DOM.
+  function changeMode(newMode: CalendarMode) {
+    const el = scrollRef.current
+    if (el) {
+      const containerTop = el.getBoundingClientRect().top
+      // Finds the week whose top is closest to (but not past) the
+      // container's own top edge, by comparing actual positions rather
+      // than by "last one wins" during iteration — weekRefs is a Map that
+      // grows via prepending earlier weeks, and Map iteration order is
+      // insertion order, not chronological order, so a prepended (earlier)
+      // week can be visited *after* later ones already in the map.
+      let anchorKey: string | null = null
+      let bestTop = -Infinity
+      for (const [key, node] of weekRefs.current) {
+        const top = node.getBoundingClientRect().top - containerTop
+        if (top <= 0 && top > bestTop) {
+          bestTop = top
+          anchorKey = key
+        }
+      }
+      modeChangeAnchorKeyRef.current = anchorKey
+    }
+    setMode(newMode)
+  }
+
+  useLayoutEffect(() => {
+    if (!modeChangeAnchorKeyRef.current) return
+    const node = weekRefs.current.get(modeChangeAnchorKeyRef.current)
+    modeChangeAnchorKeyRef.current = null
+    if (!node) return
+    suppressScrollHandlingRef.current = true
+    node.scrollIntoView({ block: 'start' })
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      suppressScrollHandlingRef.current = false
+    }))
+  }, [mode])
+
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '24px 32px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
@@ -1150,7 +1211,7 @@ function CalendarContent({
             {(['month', 'week'] as const).map((m) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => changeMode(m)}
                 style={{ background: mode === m ? 'var(--primary-tint)' : 'none', color: mode === m ? 'var(--primary)' : 'var(--ink-muted)', border: 'none', borderRadius: 7, padding: '6px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer' }}
               >
                 {CALENDAR_MODE_LABELS[m]}
@@ -1210,7 +1271,14 @@ function CalendarContent({
                     {MONTH_LABELS[monthBoundary.getMonth()]} {monthBoundary.getFullYear()}
                   </div>
                 )}
-                <div ref={isTodayWeek ? todayRowRef : undefined}>
+                <div
+                  ref={(node) => {
+                    const key = weekStart.toISOString()
+                    if (node) weekRefs.current.set(key, node)
+                    else weekRefs.current.delete(key)
+                    if (isTodayWeek) todayRowRef.current = node
+                  }}
+                >
                   <WeekRow
                     weekDates={weekDates}
                     referenceMonths={allMonths}
@@ -4858,6 +4926,15 @@ function ResourceCalendarContent({
   // Same suppress-during-programmatic-scroll fix as Calendar's own — see
   // that component's comment for the live-tested bug this closes off.
   const suppressScrollHandlingRef = useRef(false)
+  // Bug fix — found live-testing: Month/Week changes colWidth (30px vs
+  // 100px), but scrollLeft is a plain pixel value, so toggling density
+  // silently jumped to a different date range — the same pixel position
+  // means a different day count once each day's column is a different
+  // width. Captures which day index is at the left edge right before the
+  // mode changes, then the layout effect below (keyed on mode) restores
+  // that same day to the left edge using the new colWidth once it's
+  // available, instead of leaving the stale pixel value in place.
+  const modeChangeAnchorIndexRef = useRef<number | null>(null)
   const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[today.getMonth()]} ${today.getFullYear()}`)
 
   // Testing feedback item D: a second scheduler's changes (a new booking,
@@ -4965,6 +5042,25 @@ function ResourceCalendarContent({
     scrollToToday()
   }
 
+  function changeMode(newMode: TeamMode) {
+    const el = scrollRef.current
+    if (el) modeChangeAnchorIndexRef.current = Math.floor(el.scrollLeft / colWidth)
+    setMode(newMode)
+  }
+
+  // Restores whichever day was at the left edge right before Month/Week
+  // changed colWidth out from under scrollLeft — see modeChangeAnchorIndexRef.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el || modeChangeAnchorIndexRef.current === null) return
+    suppressScrollHandlingRef.current = true
+    el.scrollLeft = modeChangeAnchorIndexRef.current * colWidth
+    modeChangeAnchorIndexRef.current = null
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      suppressScrollHandlingRef.current = false
+    }))
+  }, [mode])
+
   // Explicitly-added rows are session state only, never persisted — see
   // addendum v2 §1's "no pinning is persisted in v1."
   const searchResults = useMemo(() => {
@@ -5021,7 +5117,7 @@ function ResourceCalendarContent({
           {(['month', 'week'] as const).map((m) => (
             <button
               key={m}
-              onClick={() => setMode(m)}
+              onClick={() => changeMode(m)}
               style={{ background: mode === m ? 'var(--primary-tint)' : 'none', color: mode === m ? 'var(--primary)' : 'var(--ink-muted)', border: 'none', borderRadius: 7, padding: '6px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer' }}
             >
               {TEAM_MODE_LABELS[m]}
