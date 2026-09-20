@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -14,7 +14,6 @@ import {
   AlertTriangle,
   Minus,
   ChevronLeft,
-  ChevronRight,
   Search,
   MapPin,
   Phone,
@@ -476,20 +475,8 @@ function toISODate(d: Date): string {
   const day = String(d.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
 }
-function getMonthWeeks(refDate: Date): Date[][] {
-  const year = refDate.getFullYear()
-  const month = refDate.getMonth()
-  const firstOfMonth = new Date(year, month, 1)
-  const lastOfMonth = new Date(year, month + 1, 0)
-  const gridStart = startOfWeek(firstOfMonth)
-  const gridEnd = startOfWeek(lastOfMonth)
-  const weeks: Date[][] = []
-  let cursor = gridStart
-  while (cursor <= gridEnd) {
-    weeks.push(Array.from({ length: 7 }, (_, i) => addDays(cursor, i)))
-    cursor = addDays(cursor, 7)
-  }
-  return weeks
+function addWeeks(date: Date, n: number): Date {
+  return addDays(date, n * 7)
 }
 
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
@@ -548,10 +535,31 @@ function AgendaCard({ job, onOpen }: { job: CalendarJob; onOpen: (id: string) =>
   )
 }
 
+// Continuous-scroll tuning — same treatment the desktop app's own
+// Calendar/Team views got (CC/DD): the old Month/Week toggle here only
+// ever changed how many weeks were visible per "page" (a full month grid
+// vs exactly one week), paginated with prev/next. Once scrolling itself is
+// continuous, that distinction is gone — there's no fixed page size left
+// for "week" to be a smaller alternative to, and DayCell has no separate
+// density mode the way desktop's WeekRow does (it's always just dots), so
+// the toggle is dropped entirely rather than kept as a no-op. Radius/
+// expand/threshold are smaller than desktop's own tuning to match a
+// phone's much shorter viewport.
+const MOBILE_CAL_INITIAL_RADIUS_WEEKS = 6
+const MOBILE_CAL_EXPAND_WEEKS = 6
+const MOBILE_CAL_EDGE_THRESHOLD_PX = 400
+// The weeks grid gets its own fixed-height, independently-scrollable box
+// (unlike desktop, mobile's Calendar has a separate agenda section below
+// the grid that needs to stay in the normal page flow, not scroll away
+// inside the same virtualized region) — enough rows to always show the
+// current week plus a little context either side.
+const MOBILE_CAL_GRID_HEIGHT = 340
+
 function CalendarContent({ summaries, clients, onOpenJob }: { summaries: JobSummary[]; clients: Record<string, Client>; onOpenJob: (id: string) => void }) {
-  const [mode, setMode] = useState<'month' | 'week'>('month')
-  const today = new Date()
-  const [refDate, setRefDate] = useState(today)
+  const today = useMemo(() => new Date(), [])
+  const todayWeekStart = useMemo(() => startOfWeek(today), [today])
+  const [rangeStart, setRangeStart] = useState(() => addWeeks(todayWeekStart, -MOBILE_CAL_INITIAL_RADIUS_WEEKS))
+  const [rangeEnd, setRangeEnd] = useState(() => addWeeks(todayWeekStart, MOBILE_CAL_INITIAL_RADIUS_WEEKS))
   const [selectedDate, setSelectedDate] = useState(today)
 
   // Deleted jobs drop off the Calendar same as every other normal view —
@@ -581,19 +589,91 @@ function CalendarContent({ summaries, clients, onOpenJob }: { summaries: JobSumm
     return calendarJobs.filter((j) => j.start <= iso && iso <= j.end)
   }
 
-  const weeks = mode === 'month' ? getMonthWeeks(refDate) : [Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(refDate), i))]
+  // The full continuous run of weeks currently rendered — grows via
+  // handleScroll below as the grid's own scroller nears either edge.
+  const weekStarts = useMemo(() => {
+    const out: Date[] = []
+    let cursor = rangeStart
+    while (cursor <= rangeEnd) {
+      out.push(cursor)
+      cursor = addWeeks(cursor, 1)
+    }
+    return out
+  }, [rangeStart, rangeEnd])
 
-  const goPrev = () => setRefDate((d) => (mode === 'month' ? new Date(d.getFullYear(), d.getMonth() - 1, 1) : addDays(d, -7)))
-  const goNext = () => setRefDate((d) => (mode === 'month' ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, 7)))
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const todayRowRef = useRef<HTMLDivElement>(null)
+  const monthDividerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const scrollHeightBeforeRef = useRef(0)
+  const pendingCompensationRef = useRef(false)
+  // See RaltoDesktopApp.tsx's CalendarContent for the full write-up on why
+  // both of the guards below exist — same live-tested bugs, same fixes,
+  // just re-tuned for this grid's own smaller scale.
+  const expandingTopRef = useRef(false)
+  const expandingBottomRef = useRef(false)
+  const suppressScrollHandlingRef = useRef(false)
+  const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[todayWeekStart.getMonth()]} ${todayWeekStart.getFullYear()}`)
 
-  const headerLabel =
-    mode === 'month'
-      ? `${MONTH_LABELS[refDate.getMonth()]} ${refDate.getFullYear()}`
-      : (() => {
-          const s = startOfWeek(refDate)
-          const e = addDays(s, 6)
-          return `${s.getDate()} – ${e.getDate()} ${MONTH_LABELS[e.getMonth()]}`
-        })()
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el || suppressScrollHandlingRef.current) return
+    if (el.scrollTop < MOBILE_CAL_EDGE_THRESHOLD_PX && !expandingTopRef.current) {
+      expandingTopRef.current = true
+      scrollHeightBeforeRef.current = el.scrollHeight
+      pendingCompensationRef.current = true
+      setRangeStart((d) => addWeeks(d, -MOBILE_CAL_EXPAND_WEEKS))
+    } else if (el.scrollHeight - el.scrollTop - el.clientHeight < MOBILE_CAL_EDGE_THRESHOLD_PX && !expandingBottomRef.current) {
+      expandingBottomRef.current = true
+      setRangeEnd((d) => addWeeks(d, MOBILE_CAL_EXPAND_WEEKS))
+    }
+
+    const containerTop = el.getBoundingClientRect().top
+    let current = visibleMonthLabel
+    let bestTop = -Infinity
+    for (const [key, node] of monthDividerRefs.current) {
+      const top = node.getBoundingClientRect().top - containerTop
+      if (top <= 20 && top > bestTop) {
+        bestTop = top
+        current = key
+      }
+    }
+    if (current !== visibleMonthLabel) setVisibleMonthLabel(current)
+  }
+
+  useLayoutEffect(() => {
+    expandingTopRef.current = false
+    if (!pendingCompensationRef.current) return
+    pendingCompensationRef.current = false
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop += el.scrollHeight - scrollHeightBeforeRef.current
+  }, [rangeStart])
+
+  useEffect(() => {
+    expandingBottomRef.current = false
+  }, [rangeEnd])
+
+  function scrollToToday() {
+    suppressScrollHandlingRef.current = true
+    todayRowRef.current?.scrollIntoView({ block: 'start' })
+    setVisibleMonthLabel(`${MONTH_LABELS[todayWeekStart.getMonth()]} ${todayWeekStart.getFullYear()}`)
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        suppressScrollHandlingRef.current = false
+      }),
+    )
+  }
+
+  // Waits for summaries to have actually loaded (fetched async at the app
+  // root) before the initial auto-scroll — see RaltoDesktopApp.tsx's own
+  // version of this fix for the live-tested reflow bug it closes off.
+  const hasAutoScrolledRef = useRef(false)
+  useEffect(() => {
+    if (hasAutoScrolledRef.current || calendarJobs.length === 0) return
+    hasAutoScrolledRef.current = true
+    scrollToToday()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarJobs])
 
   const agenda = jobsOnDate(selectedDate)
 
@@ -603,27 +683,10 @@ function CalendarContent({ summaries, clients, onOpenJob }: { summaries: JobSumm
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 24, color: 'var(--ink)' }}>Calendar</div>
       </div>
 
-      <div style={{ display: 'flex', padding: '14px 20px 4px' }}>
-        <div style={{ display: 'flex', background: 'var(--tint)', borderRadius: 10, padding: 3 }}>
-          {(['month', 'week'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              style={{ background: mode === m ? '#fff' : 'none', border: 'none', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, color: mode === m ? 'var(--primary)' : 'var(--ink-muted)', cursor: 'pointer', textTransform: 'capitalize' }}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px 6px' }}>
-        <button onClick={goPrev} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
-          <ChevronLeft size={19} />
-        </button>
-        <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{headerLabel}</div>
-        <button onClick={goNext} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
-          <ChevronRight size={19} />
+        <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{visibleMonthLabel}</div>
+        <button onClick={scrollToToday} style={{ background: 'var(--tint)', border: 'none', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, color: 'var(--primary)', cursor: 'pointer' }}>
+          Today
         </button>
       </div>
 
@@ -635,13 +698,42 @@ function CalendarContent({ summaries, clients, onOpenJob }: { summaries: JobSumm
             </div>
           ))}
         </div>
-        {weeks.map((weekDates, wi) => (
-          <div key={wi} style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}>
-            {weekDates.map((date) => (
-              <DayCell key={date.toISOString()} date={date} inMonth={mode === 'week' || date.getMonth() === refDate.getMonth()} isToday={sameDay(date, today)} isSelected={sameDay(date, selectedDate)} jobs={jobsOnDate(date)} onSelect={setSelectedDate} />
-            ))}
-          </div>
-        ))}
+        <div ref={scrollRef} onScroll={handleScroll} style={{ height: MOBILE_CAL_GRID_HEIGHT, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 10, marginTop: 4 }}>
+          {weekStarts.map((weekStart) => {
+            const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
+            const isTodayWeek = sameDay(weekStart, todayWeekStart)
+            // A month divider renders right before the week containing that
+            // month's 1st — same "exactly once, never duplicated" idea
+            // desktop's own CalendarContent uses.
+            const monthBoundary = weekDates.find((d) => d.getDate() === 1)
+            return (
+              <div key={weekStart.toISOString()}>
+                {monthBoundary && (
+                  <div
+                    ref={(node) => {
+                      const key = `${MONTH_LABELS[monthBoundary.getMonth()]} ${monthBoundary.getFullYear()}`
+                      if (node) monthDividerRefs.current.set(key, node)
+                      else monthDividerRefs.current.delete(key)
+                    }}
+                    style={{ padding: '4px 8px', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 11, color: 'var(--ink)', background: 'var(--tint)' }}
+                  >
+                    {MONTH_LABELS[monthBoundary.getMonth()]} {monthBoundary.getFullYear()}
+                  </div>
+                )}
+                <div
+                  ref={(node) => {
+                    if (isTodayWeek) todayRowRef.current = node
+                  }}
+                  style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}
+                >
+                  {weekDates.map((date) => (
+                    <DayCell key={date.toISOString()} date={date} inMonth={true} isToday={sameDay(date, today)} isSelected={sameDay(date, selectedDate)} jobs={jobsOnDate(date)} onSelect={setSelectedDate} />
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       <div style={{ margin: '20px 20px 10px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 13, color: 'var(--ink-muted)' }}>

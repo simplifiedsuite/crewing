@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Home as HomeIcon, Calendar as CalendarIcon, CalendarCheck, User, ChevronLeft, MapPin, Phone, Mail, Pencil, FileText, Bell, Check, CheckCircle2, Clock, X, CalendarDays, ChevronRight, Link as LinkIcon, Copy, RefreshCw, Car } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { formatDate, formatDateRange, formatTime } from '../../lib/format'
@@ -406,20 +406,8 @@ function toISODate(d: Date): string {
   const day = String(d.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
 }
-function getMonthWeeks(refDate: Date): Date[][] {
-  const year = refDate.getFullYear()
-  const month = refDate.getMonth()
-  const firstOfMonth = new Date(year, month, 1)
-  const lastOfMonth = new Date(year, month + 1, 0)
-  const gridStart = startOfWeek(firstOfMonth)
-  const gridEnd = startOfWeek(lastOfMonth)
-  const weeks: Date[][] = []
-  let cursor = gridStart
-  while (cursor <= gridEnd) {
-    weeks.push(Array.from({ length: 7 }, (_, i) => addDays(cursor, i)))
-    cursor = addDays(cursor, 7)
-  }
-  return weeks
+function addWeeks(date: Date, n: number): Date {
+  return addDays(date, n * 7)
 }
 
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
@@ -509,10 +497,23 @@ function HolidayAgendaCard({ entry }: { entry: Availability }) {
 // freelancer's list here is simply always empty, same as everywhere else
 // this data shows up. Home screen intentionally doesn't take this prop at
 // all — Holiday/TOIL stays Calendar-tab-only, per this feature's own scope.
+// Continuous-scroll tuning — same treatment as the scheduler mobile app's
+// own CalendarContent (see RaltoMobileApp.tsx) and, before that, desktop's
+// Calendar/Team views. As on scheduler mobile, the old Month/Week toggle
+// only ever changed the visible page size under prev/next pagination —
+// once scrolling is continuous that distinction (and CalendarDayCell's
+// greyed-out "not this month" state, which only made sense for a bounded
+// month grid) is gone, so the toggle is dropped rather than kept inert.
+const CREW_CAL_INITIAL_RADIUS_WEEKS = 6
+const CREW_CAL_EXPAND_WEEKS = 6
+const CREW_CAL_EDGE_THRESHOLD_PX = 400
+const CREW_CAL_GRID_HEIGHT = 340
+
 function CalendarScreen({ bookings, holidayToil, onOpenJob }: { bookings: CrewBooking[]; holidayToil: Availability[]; onOpenJob: (b: CrewBooking) => void }) {
-  const [mode, setMode] = useState<'month' | 'week'>('month')
   const today = useMemo(() => new Date(), [])
-  const [refDate, setRefDate] = useState(today)
+  const todayWeekStart = useMemo(() => startOfWeek(today), [today])
+  const [rangeStart, setRangeStart] = useState(() => addWeeks(todayWeekStart, -CREW_CAL_INITIAL_RADIUS_WEEKS))
+  const [rangeEnd, setRangeEnd] = useState(() => addWeeks(todayWeekStart, CREW_CAL_INITIAL_RADIUS_WEEKS))
   const [selectedDate, setSelectedDate] = useState(today)
 
   function bookingsOnDate(date: Date): CrewBooking[] {
@@ -525,19 +526,83 @@ function CalendarScreen({ bookings, holidayToil, onOpenJob }: { bookings: CrewBo
     return holidayToil.filter((a) => a.start_date <= iso && iso <= a.end_date)
   }
 
-  const weeks = mode === 'month' ? getMonthWeeks(refDate) : [Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(refDate), i))]
+  const weekStarts = useMemo(() => {
+    const out: Date[] = []
+    let cursor = rangeStart
+    while (cursor <= rangeEnd) {
+      out.push(cursor)
+      cursor = addWeeks(cursor, 1)
+    }
+    return out
+  }, [rangeStart, rangeEnd])
 
-  const goPrev = () => setRefDate((d) => (mode === 'month' ? new Date(d.getFullYear(), d.getMonth() - 1, 1) : addDays(d, -7)))
-  const goNext = () => setRefDate((d) => (mode === 'month' ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, 7)))
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const todayRowRef = useRef<HTMLDivElement>(null)
+  const monthDividerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const scrollHeightBeforeRef = useRef(0)
+  const pendingCompensationRef = useRef(false)
+  const expandingTopRef = useRef(false)
+  const expandingBottomRef = useRef(false)
+  const suppressScrollHandlingRef = useRef(false)
+  const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[todayWeekStart.getMonth()]} ${todayWeekStart.getFullYear()}`)
 
-  const headerLabel =
-    mode === 'month'
-      ? `${MONTH_LABELS[refDate.getMonth()]} ${refDate.getFullYear()}`
-      : (() => {
-          const s = startOfWeek(refDate)
-          const e = addDays(s, 6)
-          return `${s.getDate()} – ${e.getDate()} ${MONTH_LABELS[e.getMonth()]}`
-        })()
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el || suppressScrollHandlingRef.current) return
+    if (el.scrollTop < CREW_CAL_EDGE_THRESHOLD_PX && !expandingTopRef.current) {
+      expandingTopRef.current = true
+      scrollHeightBeforeRef.current = el.scrollHeight
+      pendingCompensationRef.current = true
+      setRangeStart((d) => addWeeks(d, -CREW_CAL_EXPAND_WEEKS))
+    } else if (el.scrollHeight - el.scrollTop - el.clientHeight < CREW_CAL_EDGE_THRESHOLD_PX && !expandingBottomRef.current) {
+      expandingBottomRef.current = true
+      setRangeEnd((d) => addWeeks(d, CREW_CAL_EXPAND_WEEKS))
+    }
+
+    const containerTop = el.getBoundingClientRect().top
+    let current = visibleMonthLabel
+    let bestTop = -Infinity
+    for (const [key, node] of monthDividerRefs.current) {
+      const top = node.getBoundingClientRect().top - containerTop
+      if (top <= 20 && top > bestTop) {
+        bestTop = top
+        current = key
+      }
+    }
+    if (current !== visibleMonthLabel) setVisibleMonthLabel(current)
+  }
+
+  useLayoutEffect(() => {
+    expandingTopRef.current = false
+    if (!pendingCompensationRef.current) return
+    pendingCompensationRef.current = false
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop += el.scrollHeight - scrollHeightBeforeRef.current
+  }, [rangeStart])
+
+  useEffect(() => {
+    expandingBottomRef.current = false
+  }, [rangeEnd])
+
+  function scrollToToday() {
+    suppressScrollHandlingRef.current = true
+    todayRowRef.current?.scrollIntoView({ block: 'start' })
+    setVisibleMonthLabel(`${MONTH_LABELS[todayWeekStart.getMonth()]} ${todayWeekStart.getFullYear()}`)
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        suppressScrollHandlingRef.current = false
+      }),
+    )
+  }
+
+  const hasAutoScrolledRef = useRef(false)
+  useEffect(() => {
+    if (hasAutoScrolledRef.current || (bookings.length === 0 && holidayToil.length === 0)) return
+    hasAutoScrolledRef.current = true
+    scrollToToday()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookings, holidayToil])
 
   const agenda = bookingsOnDate(selectedDate)
   const holidayAgenda = holidayToilOnDate(selectedDate)
@@ -548,27 +613,10 @@ function CalendarScreen({ bookings, holidayToil, onOpenJob }: { bookings: CrewBo
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 20, color: 'var(--ink)' }}>Calendar</div>
       </div>
 
-      <div style={{ display: 'flex', padding: '14px 20px 4px' }}>
-        <div style={{ display: 'flex', background: 'var(--tint)', borderRadius: 10, padding: 3 }}>
-          {(['month', 'week'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              style={{ background: mode === m ? '#fff' : 'none', border: 'none', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, color: mode === m ? 'var(--primary)' : 'var(--ink-muted)', cursor: 'pointer', textTransform: 'capitalize' }}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px 6px' }}>
-        <button onClick={goPrev} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
-          <ChevronLeft size={19} />
-        </button>
-        <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{headerLabel}</div>
-        <button onClick={goNext} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
-          <ChevronRight size={19} />
+        <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{visibleMonthLabel}</div>
+        <button onClick={scrollToToday} style={{ background: 'var(--tint)', border: 'none', borderRadius: 8, padding: '6px 12px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12.5, color: 'var(--primary)', cursor: 'pointer' }}>
+          Today
         </button>
       </div>
 
@@ -580,22 +628,48 @@ function CalendarScreen({ bookings, holidayToil, onOpenJob }: { bookings: CrewBo
             </div>
           ))}
         </div>
-        {weeks.map((weekDates, wi) => (
-          <div key={wi} style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}>
-            {weekDates.map((date) => (
-              <CalendarDayCell
-                key={date.toISOString()}
-                date={date}
-                inMonth={mode === 'week' || date.getMonth() === refDate.getMonth()}
-                isToday={sameDay(date, today)}
-                isSelected={sameDay(date, selectedDate)}
-                bookings={bookingsOnDate(date)}
-                holidayToil={holidayToilOnDate(date)}
-                onSelect={setSelectedDate}
-              />
-            ))}
-          </div>
-        ))}
+        <div ref={scrollRef} onScroll={handleScroll} style={{ height: CREW_CAL_GRID_HEIGHT, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 10, marginTop: 4 }}>
+          {weekStarts.map((weekStart) => {
+            const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
+            const isTodayWeek = sameDay(weekStart, todayWeekStart)
+            const monthBoundary = weekDates.find((d) => d.getDate() === 1)
+            return (
+              <div key={weekStart.toISOString()}>
+                {monthBoundary && (
+                  <div
+                    ref={(node) => {
+                      const key = `${MONTH_LABELS[monthBoundary.getMonth()]} ${monthBoundary.getFullYear()}`
+                      if (node) monthDividerRefs.current.set(key, node)
+                      else monthDividerRefs.current.delete(key)
+                    }}
+                    style={{ padding: '4px 8px', fontFamily: 'var(--font-body)', fontWeight: 700, fontSize: 11, color: 'var(--ink)', background: 'var(--tint)' }}
+                  >
+                    {MONTH_LABELS[monthBoundary.getMonth()]} {monthBoundary.getFullYear()}
+                  </div>
+                )}
+                <div
+                  ref={(node) => {
+                    if (isTodayWeek) todayRowRef.current = node
+                  }}
+                  style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}
+                >
+                  {weekDates.map((date) => (
+                    <CalendarDayCell
+                      key={date.toISOString()}
+                      date={date}
+                      inMonth={true}
+                      isToday={sameDay(date, today)}
+                      isSelected={sameDay(date, selectedDate)}
+                      bookings={bookingsOnDate(date)}
+                      holidayToil={holidayToilOnDate(date)}
+                      onSelect={setSelectedDate}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       <div style={{ margin: '20px 20px 10px', fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 13, color: 'var(--ink-muted)' }}>
