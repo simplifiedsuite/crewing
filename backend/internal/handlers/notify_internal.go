@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"ralto/internal/models"
+	"ralto/internal/notify"
 )
 
 // notifyPerson records a Notification + its in-app NotificationDelivery, and
@@ -13,7 +14,11 @@ import (
 // (see internal/notify/templates.go) funnels through, so "add a channel
 // later" (per the addendum's stated goal) only ever means adding one more
 // delivery row here, not touching each call site.
-func (a *API) notifyPerson(ctx context.Context, personID string, notifType models.NotificationType, payload map[string]string, emailSubject, emailBody string) error {
+//
+// attachments — variadic, so the five other trigger points (which never
+// attach anything) are unaffected; only booking_confirmed's buyout PDF
+// (Addendum v3 §5) passes one.
+func (a *API) notifyPerson(ctx context.Context, personID string, notifType models.NotificationType, payload map[string]string, emailSubject, emailBody string, attachments ...notify.Attachment) error {
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -64,7 +69,7 @@ func (a *API) notifyPerson(ctx context.Context, personID string, notifType model
 	}
 
 	status := "sent"
-	sendErr := a.Notify.SendEmail(*email, firstName, emailSubject, emailBody)
+	sendErr := a.Notify.SendEmail(*email, firstName, emailSubject, emailBody, attachments...)
 	if sendErr != nil {
 		status = "failed"
 	}

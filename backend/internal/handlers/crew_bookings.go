@@ -220,6 +220,10 @@ func (a *API) RespondToOffer(w http.ResponseWriter, r *http.Request) {
 
 	switch newStatus {
 	case models.BookingStatusConfirmed:
+		// No buyout PDF here (Addendum v3 §5 is freelancer-only) — this
+		// branch is only reached for non-freelancers; a freelancer's own
+		// accept goes to Pencilled below instead (see the switch above
+		// this function's own UPDATE), never straight to Confirmed.
 		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 		if ctxErr == nil {
 			subject, body := notify.RenderBookingConfirmed(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/bookings/"+b.ID))

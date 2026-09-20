@@ -293,6 +293,13 @@ func (a *API) CreateBooking(w http.ResponseWriter, r *http.Request) {
 		// accept or decline. RenderBookingConfirmed says "you're
 		// confirmed", never "offer", so it doesn't misrepresent this as
 		// awaiting a response.
+		//
+		// No buyout PDF here (Addendum v3 §5 is freelancer-only): this
+		// branch is only ever reached for staff — req.Status is validated
+		// above to only ever be pencilled/offered/declined on creation, so
+		// the only way b.Status ends up Confirmed here is the staff
+		// auto-upgrade a few lines up, which is itself gated to
+		// employment_type == staff.
 		ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 		if ctxErr == nil {
 			subject, body := notify.RenderBookingConfirmed(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/bookings/"+b.ID))
@@ -582,8 +589,17 @@ func (a *API) ConfirmBooking(w http.ResponseWriter, r *http.Request) {
 	ctx, ctxErr := a.loadBookingContext(r.Context(), b.ID)
 	if ctxErr == nil {
 		subject, body := notify.RenderBookingConfirmed(ctx.RoleName, ctx.JobName, ctx.DatesText, crewCTAURL("/bookings/"+b.ID))
+		// Buyout PDF (Addendum v3 §5) — freelancer only, per the addendum's
+		// scope throughout. employmentType is already in scope from the
+		// Pencilled-gate check above, so no extra lookup needed here.
+		var attachments []notify.Attachment
+		if employmentType == models.EmploymentTypeFreelancer {
+			if att := a.buyoutAttachment(r.Context(), b.ID); att != nil {
+				attachments = append(attachments, *att)
+			}
+		}
 		_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingConfirmed,
-			map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+			map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body, attachments...)
 	}
 
 	writeJSON(w, http.StatusOK, b)

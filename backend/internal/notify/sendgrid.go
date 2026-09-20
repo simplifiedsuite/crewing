@@ -2,6 +2,7 @@ package notify
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,6 +47,23 @@ type sendGridPayload struct {
 	From             sendGridAddress           `json:"from"`
 	Subject          string                    `json:"subject"`
 	Content          []sendGridContent         `json:"content"`
+	Attachments      []sendGridAttachment      `json:"attachments,omitempty"`
+}
+
+// Attachment — currently just the buyout PDF (Addendum v3 §5), but kept
+// generic rather than a one-off "pdfBytes []byte" param on SendEmail, in
+// case something else needs to attach a file later.
+type Attachment struct {
+	Filename string
+	Content  []byte
+	Type     string // MIME type, e.g. "application/pdf"
+}
+
+type sendGridAttachment struct {
+	Content     string `json:"content"` // base64
+	Filename    string `json:"filename"`
+	Type        string `json:"type"`
+	Disposition string `json:"disposition"`
 }
 
 type sendGridPersonalization struct {
@@ -62,15 +80,25 @@ type sendGridContent struct {
 	Value string `json:"value"`
 }
 
-// SendEmail sends a single HTML email. Errors are returned, not swallowed —
+// SendEmail sends a single HTML email, optionally with one or more
+// attachments (variadic so every existing call site — none of which
+// attach anything — is unaffected). Errors are returned, not swallowed —
 // callers decide whether a failed send should also mark the
 // NotificationDelivery row as failed (it should).
-func (c *Client) SendEmail(toEmail, toName, subject, htmlBody string) error {
+func (c *Client) SendEmail(toEmail, toName, subject, htmlBody string, attachments ...Attachment) error {
 	payload := sendGridPayload{
 		Personalizations: []sendGridPersonalization{{To: []sendGridAddress{{Email: toEmail, Name: toName}}}},
 		From:             sendGridAddress{Email: c.fromEmail, Name: c.fromName},
 		Subject:          subject,
 		Content:          []sendGridContent{{Type: "text/html", Value: htmlBody}},
+	}
+	for _, att := range attachments {
+		payload.Attachments = append(payload.Attachments, sendGridAttachment{
+			Content:     base64.StdEncoding.EncodeToString(att.Content),
+			Filename:    att.Filename,
+			Type:        att.Type,
+			Disposition: "attachment",
+		})
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
