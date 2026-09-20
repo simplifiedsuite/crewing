@@ -44,7 +44,7 @@ import {
   offerBooking,
   type JobSummary,
 } from '../../lib/hooks'
-import type { Booking, Client, JobContact, JobRequirementWithCounts, OperationalAlert, Person } from '../../types'
+import type { Booking, Client, JobContact, JobRequirementWithCounts, OperationalAlert, Person, Venue } from '../../types'
 // Reuses the desktop Settings screen verbatim (all five tabs — Roles,
 // Overtime rules, Skills, Vehicles, Dakboard feed) rather than rebuilding
 // it here — mobile had no way to reach Settings at all (see the "Settings"
@@ -117,7 +117,7 @@ function personName(people: Record<string, Person>, id: string): string {
 // Shared drill-down: Matching (open positions) / Assigned (already filled)
 // ---------------------------------------------------------------------------
 
-function Row({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: string; value: string }) {
+function Row({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: string; value: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 14, padding: '16px 20px' }}>
       <div style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--tint)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -128,6 +128,32 @@ function Row({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: s
         <div style={{ fontFamily: 'var(--font-body)', fontSize: 14.5, color: 'var(--ink)', marginTop: 2 }}>{value}</div>
       </div>
     </div>
+  )
+}
+
+// venueMapsQuery/venueMapsURL/VenueValue — same "open in Maps" link as the
+// crew app's own (RaltoCrewApp.tsx), reused shape rather than a shared
+// component since the two apps don't share components anywhere else
+// either. Google's universal maps search URL, matching the crew app's
+// choice. Prefers the venue's own address/city/country (already on hand
+// here via useVenues() — no backend change needed, unlike the crew app's
+// flattened booking response) alongside its name; falls back to just the
+// name when there's no address on file, and to nothing at all when no
+// venue is set, so a job with none keeps today's plain "Not set" text.
+function venueMapsQuery(venue: Venue | undefined): string | undefined {
+  if (!venue) return undefined
+  return [venue.name, venue.address, venue.city, venue.country].filter(Boolean).join(', ')
+}
+function venueMapsURL(query: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
+}
+function VenueValue({ venue }: { venue: Venue | undefined }) {
+  const query = venueMapsQuery(venue)
+  if (!query || !venue) return <>Not set</>
+  return (
+    <a href={venueMapsURL(query)} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'underline' }}>
+      {venue.name}
+    </a>
   )
 }
 
@@ -712,7 +738,7 @@ function RoleRow({ req, onOpen }: { req: JobRequirementWithCounts; onOpen: (req:
   )
 }
 
-function JobOverview({ summary, client, venueName, contact, onBack, onOpenRole }: { summary: JobSummary; client: Client | undefined; venueName: string; contact: string; onBack: () => void; onOpenRole: (req: JobRequirementWithCounts) => void }) {
+function JobOverview({ summary, client, venue, contact, onBack, onOpenRole }: { summary: JobSummary; client: Client | undefined; venue: Venue | undefined; contact: string; onBack: () => void; onOpenRole: (req: JobRequirementWithCounts) => void }) {
   const unfilled = summary.required - summary.confirmed - summary.offered
   const u = urgencyFor(summary)
 
@@ -736,7 +762,7 @@ function JobOverview({ summary, client, venueName, contact, onBack, onOpenRole }
       <div style={{ height: 1, background: 'var(--line)', margin: '0 20px' }} />
       <Row icon={CalendarDays} label="Dates" value={formatDateRange(summary.job.start_date, summary.job.end_date)} />
       <div style={{ height: 1, background: 'var(--line)', margin: '0 20px' }} />
-      <Row icon={MapPin} label="Venue" value={venueName} />
+      <Row icon={MapPin} label="Venue" value={<VenueValue venue={venue} />} />
       <div style={{ height: 1, background: 'var(--line)', margin: '0 20px' }} />
       <Row icon={Phone} label="Production contact" value={contact} />
       <div style={{ margin: '24px 20px 4px', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
@@ -773,7 +799,7 @@ function RoleDrilldown({ jobName, req, people, onBack, onOffered }: { jobName: s
   return <AssignedScreen jobName={jobName} req={req} people={people} onBack={onBack} />
 }
 
-function JobsContent({ summaries, clients, venues, people, reloadSummaries }: { summaries: JobSummary[]; clients: Record<string, Client>; venues: Record<string, { name: string }>; people: Record<string, Person>; reloadSummaries: () => void }) {
+function JobsContent({ summaries, clients, venues, people, reloadSummaries }: { summaries: JobSummary[]; clients: Record<string, Client>; venues: Record<string, Venue>; people: Record<string, Person>; reloadSummaries: () => void }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('all')
   const [openJobId, setOpenJobId] = useState<string | null>(null)
@@ -822,13 +848,13 @@ function JobsContent({ summaries, clients, venues, people, reloadSummaries }: { 
   }
 
   if (openJob) {
-    const venueName = openJob.job.venue_id ? (venues[openJob.job.venue_id]?.name ?? 'Not set') : 'Not set'
+    const venue = openJob.job.venue_id ? venues[openJob.job.venue_id] : undefined
     const primary = contacts[0]
     return (
       <JobOverview
         summary={openJob}
         client={clients[openJob.job.client_id]}
-        venueName={venueName}
+        venue={venue}
         contact={primary ? `${primary.name}${primary.phone ? ' · ' + primary.phone : ''}` : 'Not yet assigned'}
         onBack={() => setOpenJobId(null)}
         onOpenRole={setOpenRole}
