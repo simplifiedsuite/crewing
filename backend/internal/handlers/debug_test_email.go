@@ -22,9 +22,11 @@ func (a *API) SendTestEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "to_email is required")
 		return
 	}
+	fromEmail, fromName, keyPrefix, keyLen := a.Notify.DebugInfo()
+	debug := map[string]interface{}{"from_email": fromEmail, "from_name": fromName, "key_prefix": keyPrefix, "key_len": keyLen}
 	if err := a.Notify.SendEmail(req.ToEmail, "", "Ralto SendGrid test", "This is a one-off test send confirming SendGrid delivery is working."); err != nil {
-		writeError(w, http.StatusBadGateway, "sendgrid send failed: "+err.Error())
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "sendgrid send failed: " + err.Error(), "debug": debug})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"sent": true, "debug": debug})
 }

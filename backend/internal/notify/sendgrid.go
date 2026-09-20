@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 )
@@ -61,6 +62,18 @@ type sendGridContent struct {
 	Value string `json:"value"`
 }
 
+// DebugInfo — temporary, for diagnosing the first-ever SendGrid 403 (see
+// the debug test-email endpoint). Never returns the full key: just enough
+// (length + a short prefix) to confirm the right value actually made it
+// into the process env, without logging or echoing back a usable secret.
+func (c *Client) DebugInfo() (fromEmail, fromName, keyPrefix string, keyLen int) {
+	prefix := c.apiKey
+	if len(prefix) > 6 {
+		prefix = prefix[:6]
+	}
+	return c.fromEmail, c.fromName, prefix, len(c.apiKey)
+}
+
 // SendEmail sends a single HTML email. Errors are returned, not swallowed —
 // callers decide whether a failed send should also mark the
 // NotificationDelivery row as failed (it should).
@@ -88,7 +101,12 @@ func (c *Client) SendEmail(toEmail, toName, subject, htmlBody string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("sendgrid returned status %d", resp.StatusCode)
+		// SendGrid's error responses name the specific check that failed
+		// (unverified sender, malformed key, etc.) — swallowing the body
+		// down to just a status code was making a first real failure
+		// impossible to diagnose from the caller side.
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("sendgrid returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }
