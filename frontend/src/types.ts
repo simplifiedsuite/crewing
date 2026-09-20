@@ -313,6 +313,13 @@ export interface CrewBooking extends Booking {
   // client-colour stripe (see clientColor in RaltoDesktopApp.tsx).
   client_color_hex?: string
   venue_name?: string
+  // venue_address/city/country — the Venue's own Core-synced address
+  // fields, absent whenever the Venue has no Core Location behind it (or
+  // no venue is set at all, same as venue_name). Used to build the "open
+  // in Maps" link — see venueMapsQuery in RaltoCrewApp.tsx.
+  venue_address?: string
+  venue_city?: string
+  venue_country?: string
   job_start_date: string
   job_end_date: string
 }

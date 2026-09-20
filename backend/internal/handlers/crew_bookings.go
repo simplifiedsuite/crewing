@@ -29,14 +29,23 @@ type crewBookingResponse struct {
 	ClientName     string  `json:"client_name"`
 	ClientColorHex *string `json:"client_color_hex,omitempty"`
 	VenueName      *string `json:"venue_name,omitempty"`
-	JobStartDate   string  `json:"job_start_date"`
-	JobEndDate     string  `json:"job_end_date"`
+	// VenueAddress/City/Country — the Venue's own Core-synced address
+	// fields (see Venue.core_location_id), for the crew app's "open in
+	// Maps" link. Absent whenever a Venue was created/edited manually
+	// without a Core Location behind it, same as Venue itself is absent
+	// whenever no venue is set at all — the frontend falls back
+	// accordingly in both cases rather than treating either as an error.
+	VenueAddress *string `json:"venue_address,omitempty"`
+	VenueCity    *string `json:"venue_city,omitempty"`
+	VenueCountry *string `json:"venue_country,omitempty"`
+	JobStartDate string  `json:"job_start_date"`
+	JobEndDate   string  `json:"job_end_date"`
 }
 
 const crewBookingSelect = `
 	SELECT b.id, b.job_requirement_id, b.person_id, b.status, b.start_date, b.end_date, b.call_time,
 	       b.rate_override, b.offered_at, b.responded_at, b.confirmed_at, b.notes,
-	       ro.name, j.name, c.name, c.brand_color_hex, v.name, j.start_date, j.end_date
+	       ro.name, j.name, c.name, c.brand_color_hex, v.name, v.address, v.city, v.country, j.start_date, j.end_date
 	FROM bookings b
 	JOIN job_requirements jr ON jr.id = b.job_requirement_id
 	JOIN jobs j ON j.id = jr.job_id
@@ -48,7 +57,7 @@ const crewBookingSelect = `
 func scanCrewBooking(rows pgx.Rows, b *crewBookingResponse) error {
 	return rows.Scan(&b.ID, &b.JobRequirementID, &b.PersonID, &b.Status, &b.StartDate, &b.EndDate, &b.CallTime,
 		&b.RateOverride, &b.OfferedAt, &b.RespondedAt, &b.ConfirmedAt, &b.Notes,
-		&b.RoleName, &b.JobName, &b.ClientName, &b.ClientColorHex, &b.VenueName, &b.JobStartDate, &b.JobEndDate)
+		&b.RoleName, &b.JobName, &b.ClientName, &b.ClientColorHex, &b.VenueName, &b.VenueAddress, &b.VenueCity, &b.VenueCountry, &b.JobStartDate, &b.JobEndDate)
 }
 
 // ListMyBookings returns everything except declined/cancelled — the crew

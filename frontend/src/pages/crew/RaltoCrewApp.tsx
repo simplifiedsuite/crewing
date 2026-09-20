@@ -37,6 +37,38 @@ function clientStripeColor(colorHex: string | undefined): string {
   return colorHex || DEFAULT_CLIENT_COLOR
 }
 
+// venueMapsQuery/venueMapsURL — the "open in Maps" link on a job's venue.
+// Google's universal search URL (maps.apple.com would work just as well
+// for the same cross-platform hand-off) is the pick here since this is
+// the first maps link anywhere in the codebase — nothing existing to
+// match. Prefers the venue's own Core-synced address fields (more
+// specific = a better match in Maps) alongside the venue name, and falls
+// back to just the name when there's no address on file — either way this
+// only returns something when a venue is actually set, so a job with none
+// renders exactly as before (no dead link).
+function venueMapsQuery(job: CrewBooking): string | undefined {
+  if (!job.venue_name) return undefined
+  return [job.venue_name, job.venue_address, job.venue_city, job.venue_country].filter(Boolean).join(', ')
+}
+function venueMapsURL(query: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
+}
+
+// VenueValue — the venue name as a tappable Maps link wherever a job's
+// venue is shown as its own field, or the plain fallback text when there's
+// nothing to link (no venue set at all). style is applied to the link
+// (font-size/family/weight to match its call site); the link colour itself
+// is always var(--primary) regardless, so it reads as tappable.
+function VenueValue({ job, style, fallback }: { job: CrewBooking; style?: React.CSSProperties; fallback: React.ReactNode }) {
+  const query = venueMapsQuery(job)
+  if (!query) return <>{fallback}</>
+  return (
+    <a href={venueMapsURL(query)} target="_blank" rel="noopener noreferrer" style={{ ...style, color: 'var(--primary)', textDecoration: 'underline' }}>
+      {job.venue_name}
+    </a>
+  )
+}
+
 // Holiday/TOIL — same "Holiday"/"TOIL" labels and AM/PM-only note the iCal
 // feed already uses (backend/ical-sidecar/ical_feed.py's own
 // AVAILABILITY_TYPE_LABEL), reused rather than invented fresh so the
@@ -74,7 +106,7 @@ function Divider() {
   return <div style={{ height: 1, background: 'var(--line)', margin: '0 20px' }} />
 }
 
-function Row({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: string; value: string }) {
+function Row({ icon: Icon, label, value }: { icon: typeof CalendarDays; label: string; value: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 14, padding: '16px 20px' }}>
       <div style={{ width: 34, height: 34, borderRadius: 10, background: 'var(--tint)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -169,7 +201,9 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
               </div>
               <div>
                 <div style={{ fontFamily: 'var(--font-body)', fontSize: 12, color: 'var(--ink-muted)' }}>Venue</div>
-                <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 17, color: 'var(--ink)' }}>{nextJob.venue_name ?? 'TBC'}</div>
+                <div style={{ fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 17, color: 'var(--ink)' }}>
+                  <VenueValue job={nextJob} fallback="TBC" />
+                </div>
               </div>
             </div>
 
@@ -202,7 +236,9 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
                     <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)', marginTop: 2 }}>
                       {offer.role_name} · {formatDateRange(offer.start_date, offer.end_date)}
                     </div>
-                    <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>{offer.venue_name ?? 'Venue TBC'}</div>
+                    <div style={{ fontFamily: 'var(--font-body)', fontSize: 13, color: 'var(--ink-muted)' }}>
+                      <VenueValue job={offer} fallback="Venue TBC" />
+                    </div>
                   </div>
                 </div>
 
@@ -316,7 +352,7 @@ function JobDetailScreen({ job, onBack }: { job: CrewBooking; onBack: () => void
       <Divider />
       <Row icon={CalendarDays} label="Call" value={`${formatDate(job.start_date)}${job.call_time ? ' · ' + formatTime(job.call_time) : ''}`} />
       <Divider />
-      <Row icon={MapPin} label="Venue" value={job.venue_name ?? 'Not yet set'} />
+      <Row icon={MapPin} label="Venue" value={<VenueValue job={job} fallback="Not yet set" />} />
       <Divider />
       <Row icon={Phone} label="Production contact" value={contact ? `${contact.name}${contact.role_title ? ' · ' + contact.role_title : ''}${contact.phone ? ' · ' + contact.phone : ''}` : 'Not yet assigned'} />
       {job.notes && (
