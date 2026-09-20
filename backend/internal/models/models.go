@@ -194,16 +194,17 @@ type Role struct {
 	Category *string `json:"category,omitempty"`
 }
 
-// Vehicle is a company fleet vehicle (e.g. "Transit Van 1") — distinct
-// from Person.VehicleRegistration, which is a crew member's own personal
-// car. Assignable to Jobs via job_vehicles (see migrations/0014).
-type Vehicle struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Registration string    `json:"registration"`
-	Notes        *string   `json:"notes,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+// JobVehicle is a Job's assignment to one of Core's shared Vehicles (see
+// Core's migrations/0009_vehicles.sql) — distinct from
+// Person.VehicleRegistration, which is a crew member's own personal car.
+// No local mirror row: CoreVehicleID is a bare UUID (Core is a separate
+// database), Name/Registration are a point-in-time cached label, same
+// "cached, not live-refreshed" convention as Job.SharedContractName — see
+// migrations/0029_job_core_vehicles.sql.
+type JobVehicle struct {
+	CoreVehicleID string `json:"core_vehicle_id"`
+	Name          string `json:"name"`
+	Registration  string `json:"registration"`
 }
 
 // --- JobRequirement ---

@@ -37,18 +37,17 @@ import {
   useCandidates,
   useBookingsForRequirement,
   useRoles,
-  useVehicles,
   indexById,
   resolveAlert,
   offerBooking,
   type JobSummary,
 } from '../../lib/hooks'
 import type { Booking, Client, JobContact, JobRequirementWithCounts, OperationalAlert, Person, Venue } from '../../types'
-// Reuses the desktop Settings screen verbatim (all five tabs — Roles,
-// Overtime rules, Skills, Vehicles, Dakboard feed) rather than rebuilding
-// it here — mobile had no way to reach Settings at all (see the "Settings"
-// button next to Sign out below), and the fix should surface the same
-// content, not a cut-down mobile version of it.
+// Reuses the desktop Settings screen verbatim (all four tabs — Roles,
+// Overtime rules, Skills, Dakboard feed) rather than rebuilding it here —
+// mobile had no way to reach Settings at all (see the "Settings" button
+// next to Sign out below), and the fix should surface the same content,
+// not a cut-down mobile version of it.
 import { SettingsContent } from './RaltoDesktopApp'
 
 // ---------------------------------------------------------------------------
@@ -1175,7 +1174,6 @@ export function RaltoMobileApp() {
   const { data: peopleList } = usePeople()
   const { data: alerts, reload: reloadAlerts } = useAlerts()
   const { data: rolesList, reload: reloadRoles } = useRoles()
-  const { data: vehiclesList, reload: reloadVehicles } = useVehicles()
 
   const clients = useMemo(() => indexById(clientsList), [clientsList])
   const venues = useMemo(() => indexById(venuesList), [venuesList])
@@ -1240,7 +1238,7 @@ export function RaltoMobileApp() {
             reloadSummaries={reloadSummaries}
           />
         )}
-        {view === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} vehicles={vehiclesList} reloadVehicles={reloadVehicles} />}
+        {view === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} />}
       </div>
 
       <div style={{ display: 'flex', borderTop: '1px solid var(--line)', background: '#fff', padding: '10px 0 16px' }}>

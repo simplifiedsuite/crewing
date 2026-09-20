@@ -12,11 +12,13 @@ import type {
   CoreContract,
   CoreJob,
   CoreLocation,
+  CoreVehicle,
   EmploymentType,
   Job,
   JobCommitment,
   JobDayLabel,
   JobRequirementWithCounts,
+  JobVehicle,
   JobStatus,
   OperationalAlert,
   OvertimeRule,
@@ -32,7 +34,6 @@ import type {
   ScheduleItHistory,
   Skill,
   SkillType,
-  Vehicle,
   Venue,
 } from '../types'
 
@@ -106,32 +107,24 @@ export function deleteRole(id: string) {
   return api.delete<{ ok: boolean }>(`/roles/${id}`)
 }
 
-export function useVehicles() {
-  return useCollection<Vehicle>('/vehicles')
-}
-
-export function createVehicle(input: { name: string; registration: string; notes?: string }) {
-  return api.post<Vehicle>('/vehicles', input)
-}
-
-export function updateVehicle(id: string, input: { name: string; registration: string; notes?: string }) {
-  return api.put<Vehicle>(`/vehicles/${id}`, input)
-}
-
-export function deleteVehicle(id: string) {
-  return api.delete<{ ok: boolean }>(`/vehicles/${id}`)
+// listCoreVehicles backs the Job "Assign a vehicle" picker — live per
+// §5a's picker rule, same pattern as listCoreClients/listCoreLocations.
+// Ralto no longer owns a local vehicles table (Stage 3 of the shared
+// Vehicle addendum) — Core is the only source for "which vehicles exist".
+export function listCoreVehicles() {
+  return api.get<CoreVehicle[]>('/core-vehicles')
 }
 
 export function listJobVehicles(jobId: string) {
-  return api.get<Vehicle[]>(`/jobs/${jobId}/vehicles`)
+  return api.get<JobVehicle[]>(`/jobs/${jobId}/vehicles`)
 }
 
-export function assignVehicleToJob(jobId: string, vehicleId: string) {
-  return api.post(`/jobs/${jobId}/vehicles`, { vehicle_id: vehicleId })
+export function assignVehicleToJob(jobId: string, vehicle: CoreVehicle) {
+  return api.post(`/jobs/${jobId}/vehicles`, { core_vehicle_id: vehicle.id, name: vehicle.name, registration: vehicle.registration })
 }
 
-export function unassignVehicleFromJob(jobId: string, vehicleId: string) {
-  return api.delete(`/jobs/${jobId}/vehicles/${vehicleId}`)
+export function unassignVehicleFromJob(jobId: string, coreVehicleId: string) {
+  return api.delete(`/jobs/${jobId}/vehicles/${coreVehicleId}`)
 }
 
 // useJobDayLabels — testing feedback R: what each day within a Job means

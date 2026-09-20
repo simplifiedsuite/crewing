@@ -112,10 +112,7 @@ import {
   createRole,
   updateRole,
   deleteRole,
-  useVehicles,
-  createVehicle,
-  updateVehicle,
-  deleteVehicle,
+  listCoreVehicles,
   listJobVehicles,
   assignVehicleToJob,
   unassignVehicleFromJob,
@@ -137,12 +134,14 @@ import type {
   CoreContract,
   CoreJob,
   CoreLocation,
+  CoreVehicle,
   EmploymentType,
   Job,
   JobCommitment,
   JobStatus,
   JobContact,
   JobRequirementWithCounts,
+  JobVehicle,
   OperationalAlert,
   OvertimeRule,
   Person,
@@ -156,7 +155,6 @@ import type {
   ScheduleItHistory,
   Skill,
   SkillType,
-  Vehicle,
   Venue,
 } from '../../types'
 
@@ -3420,8 +3418,9 @@ function AddRoleRequirementRow({
 // here rather than on every row of the compact left-hand Jobs list, which
 // would need an extra fetch per row just to render a small icon; this is
 // still "the Jobs tab" the feedback asked for.
-function JobVehiclesSection({ jobId, vehiclesList }: { jobId: string; vehiclesList: Vehicle[] }) {
-  const [assigned, setAssigned] = useState<Vehicle[]>([])
+function JobVehiclesSection({ jobId }: { jobId: string }) {
+  const [assigned, setAssigned] = useState<JobVehicle[]>([])
+  const [coreVehicles, setCoreVehicles] = useState<CoreVehicle[]>([])
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
   const [pickId, setPickId] = useState('')
@@ -3438,14 +3437,21 @@ function JobVehiclesSection({ jobId, vehiclesList }: { jobId: string; vehiclesLi
     reload()
   }, [reload])
 
-  const assignedIds = new Set(assigned.map((v) => v.id))
-  const available = vehiclesList.filter((v) => !assignedIds.has(v.id))
+  // Live from Core every time "Assign" opens the picker, per §5a's "pickers
+  // always go live" rule — same reasoning as the Client/Contract pickers.
+  useEffect(() => {
+    if (adding) listCoreVehicles().then(setCoreVehicles)
+  }, [adding])
+
+  const assignedIds = new Set(assigned.map((v) => v.core_vehicle_id))
+  const available = coreVehicles.filter((v) => !assignedIds.has(v.id))
 
   async function assign() {
-    if (!pickId) return
+    const vehicle = available.find((v) => v.id === pickId)
+    if (!vehicle) return
     setBusy(true)
     try {
-      await assignVehicleToJob(jobId, pickId)
+      await assignVehicleToJob(jobId, vehicle)
       setPickId('')
       setAdding(false)
       reload()
@@ -3454,10 +3460,10 @@ function JobVehiclesSection({ jobId, vehiclesList }: { jobId: string; vehiclesLi
     }
   }
 
-  async function unassign(vehicleId: string) {
+  async function unassign(coreVehicleId: string) {
     setBusy(true)
     try {
-      await unassignVehicleFromJob(jobId, vehicleId)
+      await unassignVehicleFromJob(jobId, coreVehicleId)
       reload()
     } finally {
       setBusy(false)
@@ -3494,9 +3500,9 @@ function JobVehiclesSection({ jobId, vehiclesList }: { jobId: string; vehiclesLi
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
         {assigned.map((v) => (
-          <span key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 5, border: '1px solid var(--line)', borderRadius: 999, padding: '4px 6px 4px 10px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}>
+          <span key={v.core_vehicle_id} style={{ display: 'flex', alignItems: 'center', gap: 5, border: '1px solid var(--line)', borderRadius: 999, padding: '4px 6px 4px 10px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}>
             {v.name} · {v.registration}
-            <button onClick={() => unassign(v.id)} disabled={busy} title="Unassign" style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--ink-muted)', padding: 2, display: 'flex' }}>
+            <button onClick={() => unassign(v.core_vehicle_id)} disabled={busy} title="Unassign" style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--ink-muted)', padding: 2, display: 'flex' }}>
               <X size={11} />
             </button>
           </span>
@@ -3567,7 +3573,6 @@ function JobsContent({
   reloadVenues,
   projects,
   roles,
-  vehiclesList,
   selectedId,
   onSelect,
   reloadSummaries,
@@ -3583,7 +3588,6 @@ function JobsContent({
   reloadVenues: () => void
   projects: Project[]
   roles: Role[]
-  vehiclesList: Vehicle[]
   selectedId: string | undefined
   onSelect: (id: string) => void
   reloadSummaries: () => void
@@ -4042,7 +4046,7 @@ function JobsContent({
           />
         </div>
 
-        <JobVehiclesSection key={selected.job.id} jobId={selected.job.id} vehiclesList={vehiclesList} />
+        <JobVehiclesSection key={selected.job.id} jobId={selected.job.id} />
       </div>
     </>
   )
@@ -6941,121 +6945,6 @@ function RolesSection({ roles, reload }: { roles: Role[]; reload: () => void }) 
   )
 }
 
-function VehicleForm({ vehicle, onCancel, onSaved }: { vehicle?: Vehicle; onCancel: () => void; onSaved: () => void }) {
-  const [name, setName] = useState(vehicle?.name ?? '')
-  const [registration, setRegistration] = useState(vehicle?.registration ?? '')
-  const [notes, setNotes] = useState(vehicle?.notes ?? '')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | undefined>(undefined)
-
-  async function submit() {
-    if (!name.trim() || !registration.trim()) {
-      setError('Name and registration are both required.')
-      return
-    }
-    setSaving(true)
-    setError(undefined)
-    try {
-      const payload = { name, registration, notes: notes || undefined }
-      if (vehicle) await updateVehicle(vehicle.id, payload)
-      else await createVehicle(payload)
-      onSaved()
-    } catch {
-      setError('Could not save that vehicle.')
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div style={{ ...settingsRowStyle, flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
-      <div style={{ display: 'flex', gap: 10 }}>
-        <label style={{ ...settingsLabelStyle, flex: 1 }}>
-          Name
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Transit Van 1" style={settingsInputStyle} />
-        </label>
-        <label style={{ ...settingsLabelStyle, flex: 1 }}>
-          Registration
-          <input value={registration} onChange={(e) => setRegistration(e.target.value)} placeholder="e.g. AB12 CDE" style={settingsInputStyle} />
-        </label>
-      </div>
-      <label style={settingsLabelStyle}>
-        Notes (optional)
-        <input value={notes} onChange={(e) => setNotes(e.target.value)} style={settingsInputStyle} />
-      </label>
-      {error && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button onClick={onCancel} style={settingsCancelButtonStyle}>
-          Cancel
-        </button>
-        <button onClick={submit} disabled={saving} style={{ ...settingsPrimaryButtonStyle, opacity: saving ? 0.7 : 1 }}>
-          {saving ? 'Saving…' : vehicle ? 'Save' : 'Add vehicle'}
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function VehiclesSection({ vehicles, reload }: { vehicles: Vehicle[]; reload: () => void }) {
-  const [creating, setCreating] = useState(false)
-  const [editingId, setEditingId] = useState<string | undefined>(undefined)
-  const { pendingId, setPendingId, blocked, confirmDelete } = useDeleteWithGuard(deleteVehicle, reload)
-
-  return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)' }}>Vehicles</span>
-        {!creating && (
-          <button onClick={() => setCreating(true)} style={settingsAddButtonStyle}>
-            <Plus size={13} /> Add vehicle
-          </button>
-        )}
-      </div>
-      {creating && (
-        <div style={{ marginBottom: 10 }}>
-          <VehicleForm onCancel={() => setCreating(false)} onSaved={() => { setCreating(false); reload() }} />
-        </div>
-      )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {vehicles.map((vehicle) =>
-          editingId === vehicle.id ? (
-            <VehicleForm key={vehicle.id} vehicle={vehicle} onCancel={() => setEditingId(undefined)} onSaved={() => { setEditingId(undefined); reload() }} />
-          ) : (
-            <div key={vehicle.id}>
-              <div style={settingsRowStyle}>
-                <div style={{ flex: 1, fontFamily: 'var(--font)', fontSize: 13.5, color: 'var(--ink)' }}>
-                  <span style={{ fontWeight: 600 }}>{vehicle.name}</span>
-                  <span style={{ color: 'var(--ink-muted)' }}> · {vehicle.registration}</span>
-                </div>
-                {pendingId === vehicle.id ? (
-                  <>
-                    <span style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)' }}>Delete this vehicle?</span>
-                    <button onClick={() => setPendingId(undefined)} style={{ ...settingsCancelButtonStyle, padding: '5px 10px' }}>
-                      Cancel
-                    </button>
-                    <button onClick={() => confirmDelete(vehicle.id)} style={{ ...settingsPrimaryButtonStyle, background: 'var(--danger)', padding: '5px 10px' }}>
-                      Confirm
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button onClick={() => setEditingId(vehicle.id)} title="Edit vehicle" style={settingsIconButtonStyle}>
-                      <Pencil size={14} />
-                    </button>
-                    <button onClick={() => setPendingId(vehicle.id)} title="Delete vehicle" style={settingsIconButtonStyle}>
-                      <Trash2 size={14} />
-                    </button>
-                  </>
-                )}
-              </div>
-              {blocked?.id === vehicle.id && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{blocked.message}</div>}
-            </div>
-          ),
-        )}
-        {vehicles.length === 0 && !creating && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)' }}>No fleet vehicles yet.</div>}
-      </div>
-    </div>
-  )
-}
 
 function OvertimeRuleForm({ rule, onCancel, onSaved }: { rule?: OvertimeRule; onCancel: () => void; onSaved: () => void }) {
   const [name, setName] = useState(rule?.name ?? '')
@@ -7418,29 +7307,26 @@ function DakboardFeedSection() {
   )
 }
 
-type SettingsTabKey = 'roles' | 'overtime' | 'skills' | 'vehicles' | 'dakboard'
+type SettingsTabKey = 'roles' | 'overtime' | 'skills' | 'dakboard'
 const SETTINGS_TABS: { key: SettingsTabKey; label: string }[] = [
   { key: 'roles', label: 'Roles' },
   { key: 'overtime', label: 'Overtime rules' },
   { key: 'skills', label: 'Skills' },
-  { key: 'vehicles', label: 'Vehicles' },
   { key: 'dakboard', label: 'Dakboard feed' },
 ]
 
 // Exported — RaltoMobileApp reuses this exact component (via a Settings
 // entry point next to Sign out, not a 5th bottom-tab icon) rather than
 // rebuilding the same five tabs a second time. See that file's own root
-// component for the wiring.
+// component for the wiring. Fleet vehicles moved off this screen entirely
+// (Stage 3 of the shared Vehicle addendum) — Core's own admin screen owns
+// vehicle identity now, Ralto only picks from it on a Job.
 export function SettingsContent({
   roles,
   reloadRoles,
-  vehicles,
-  reloadVehicles,
 }: {
   roles: Role[]
   reloadRoles: () => void
-  vehicles: Vehicle[]
-  reloadVehicles: () => void
 }) {
   const [tab, setTab] = useState<SettingsTabKey>('roles')
   const { data: overtimeRules, reload: reloadOvertimeRules } = useOvertimeRules()
@@ -7449,7 +7335,7 @@ export function SettingsContent({
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px' }}>
       <div style={{ fontFamily: 'var(--font)', fontWeight: 700, fontSize: 24, color: 'var(--ink)', marginBottom: 4 }}>Settings</div>
-      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, skills, fleet vehicles — plus the shared Dakboard feed link.</div>
+      <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', marginBottom: 20 }}>Reference data schedulers curate — roles, overtime rules, skills — plus the shared Dakboard feed link.</div>
 
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', marginBottom: 20 }}>
         {SETTINGS_TABS.map((t) => (
@@ -7478,7 +7364,6 @@ export function SettingsContent({
         {tab === 'roles' && <RolesSection roles={roles} reload={reloadRoles} />}
         {tab === 'overtime' && <OvertimeRulesSection rules={overtimeRules} reload={reloadOvertimeRules} />}
         {tab === 'skills' && <SkillsSection skills={skills} reload={reloadSkills} />}
-        {tab === 'vehicles' && <VehiclesSection vehicles={vehicles} reload={reloadVehicles} />}
         {tab === 'dakboard' && <DakboardFeedSection />}
       </div>
     </div>
@@ -7528,7 +7413,6 @@ export function RaltoDesktopApp() {
   const { data: venuesList, reload: reloadVenues } = useVenues()
   const { data: projectsList } = useProjects()
   const { data: rolesList, reload: reloadRoles } = useRoles()
-  const { data: vehiclesList, reload: reloadVehicles } = useVehicles()
   const { data: people, reload: reloadPeople } = usePeople()
   const { data: alerts, reload: reloadAlerts } = useAlerts()
 
@@ -7647,7 +7531,6 @@ export function RaltoDesktopApp() {
           reloadVenues={reloadVenues}
           projects={projectsList}
           roles={rolesList}
-          vehiclesList={vehiclesList}
           selectedId={selectedJobId}
           onSelect={(id) => navigate(`${NAV_PATH.jobs}/${id}`)}
           reloadSummaries={reloadSummaries}
@@ -7678,7 +7561,7 @@ export function RaltoDesktopApp() {
         />
       )}
       {active === 'archive' && <ArchiveContent summaries={summaries} clients={clients} people={people} reloadSummaries={reloadSummaries} />}
-      {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} vehicles={vehiclesList} reloadVehicles={reloadVehicles} />}
+      {active === 'settings' && <SettingsContent roles={rolesList} reloadRoles={reloadRoles} />}
     </div>
   )
 }

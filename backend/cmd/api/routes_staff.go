@@ -38,6 +38,7 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 		r.Get("/core-contracts", api.ListCoreContracts)
 		r.Get("/core-locations", api.ListCoreLocations)
 		r.Post("/core-locations", api.CreateCoreLocation)
+		r.Get("/core-vehicles", api.ListCoreVehicles)
 
 		// Shared Core Job entity — one Monday fetch, visible from every
 		// product. See Core's own migrations/0008_jobs.sql.
@@ -96,15 +97,6 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Delete("/{id}/vehicles/{vehicleId}", api.UnassignVehicleFromJob)
 			r.Get("/{id}/day-labels", api.ListJobDayLabels)
 			r.Put("/{id}/day-labels/{date}", api.SetJobDayLabel)
-		})
-
-		// Fleet vehicles (Settings) — separate from a crew member's own
-		// personal vehicle_registration on Person. See internal/handlers/vehicles.go.
-		r.Route("/vehicles", func(r chi.Router) {
-			r.Get("/", api.ListVehicles)
-			r.Post("/", api.CreateVehicle)
-			r.Put("/{id}", api.UpdateVehicle)
-			r.Delete("/{id}", api.DeleteVehicle)
 		})
 
 		r.Route("/job-requirements", func(r chi.Router) {

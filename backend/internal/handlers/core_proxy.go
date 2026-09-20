@@ -162,3 +162,11 @@ func (a *API) ListCoreLocations(w http.ResponseWriter, r *http.Request) {
 func (a *API) CreateCoreLocation(w http.ResponseWriter, r *http.Request) {
 	a.proxyToCore(w, r, "/api/locations")
 }
+
+// ListCoreVehicles backs the Job "Assign a vehicle" picker (Stage 3 of the
+// shared Vehicle addendum) — live per §5a's picker rule, same pattern as
+// ListCoreLocations. Read-only: creating/editing a Vehicle's identity
+// happens in Core's own admin screen, not here.
+func (a *API) ListCoreVehicles(w http.ResponseWriter, r *http.Request) {
+	a.proxyToCore(w, r, "/api/vehicles")
+}

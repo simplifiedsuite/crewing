@@ -162,15 +162,23 @@ export interface OvertimeRule {
   multiplier: number
 }
 
-// Company fleet vehicle (e.g. "Transit Van 1") — distinct from
+// Core's own shared Vehicle entity — identity only (name/label,
+// registration). Fetched live (GET /core-vehicles) for the Job "Assign a
+// vehicle" picker, same pattern as CoreClient/CoreLocation. Distinct from
 // Person.vehicle_registration, a crew member's own personal car.
-export interface Vehicle {
+export interface CoreVehicle {
   id: string
   name: string
   registration: string
-  notes?: string
-  created_at: string
-  updated_at: string
+}
+
+// A Job's assignment to one of Core's shared Vehicles — cached
+// name/registration at the time it was assigned (re-picking is how it's
+// refreshed), same shape job_core_vehicles stores server-side.
+export interface JobVehicle {
+  core_vehicle_id: string
+  name: string
+  registration: string
 }
 
 export type SkillType = 'skill' | 'certification' | 'visa' | 'credential'
