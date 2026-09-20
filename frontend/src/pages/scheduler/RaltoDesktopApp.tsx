@@ -3437,11 +3437,13 @@ function JobVehiclesSection({ jobId }: { jobId: string }) {
     reload()
   }, [reload])
 
-  // Live from Core every time "Assign" opens the picker, per §5a's "pickers
+  // Live from Core whenever this section mounts (not gated on "adding" —
+  // the "Assign"/"Assign a vehicle" button's own visibility depends on
+  // knowing whether any unassigned vehicles exist), per §5a's "pickers
   // always go live" rule — same reasoning as the Client/Contract pickers.
   useEffect(() => {
-    if (adding) listCoreVehicles().then(setCoreVehicles)
-  }, [adding])
+    listCoreVehicles().then(setCoreVehicles)
+  }, [jobId])
 
   const assignedIds = new Set(assigned.map((v) => v.core_vehicle_id))
   const available = coreVehicles.filter((v) => !assignedIds.has(v.id))
