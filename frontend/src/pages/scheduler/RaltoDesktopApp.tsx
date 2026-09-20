@@ -1075,10 +1075,22 @@ function CalendarContent({
 
   // Lands on today by default — the initial render starts
   // CALENDAR_INITIAL_RADIUS_WEEKS weeks before today, not at today itself.
+  // Bug fix — found live-testing: summaries load asynchronously (fetched
+  // once at the app root), so on first mount every WeekRow above today
+  // renders with no job bars yet, much shorter than it will be a moment
+  // later. Scrolling on the very first render (empty-deps effect) landed
+  // part-way into the *next* month once those bars actually appeared and
+  // pushed everything below them down — no compensation catches this,
+  // since it's a data-arrival reflow, not a range-expansion prepend. Only
+  // auto-scrolling once real data has actually arrived (and only the one
+  // time, via the ref guard) fixes it without re-fighting the scheduler's
+  // own later scrolling.
+  const hasAutoScrolledRef = useRef(false)
   useEffect(() => {
+    if (hasAutoScrolledRef.current || calendarJobs.length === 0) return
+    hasAutoScrolledRef.current = true
     todayRowRef.current?.scrollIntoView({ block: 'start' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [calendarJobs])
 
   function goToday() {
     todayRowRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -4872,11 +4884,17 @@ function ResourceCalendarContent({
   }, [rangeEnd])
 
   // Lands on today by default — the initial window starts
-  // TEAM_INITIAL_RADIUS_DAYS before today, not at today itself.
+  // TEAM_INITIAL_RADIUS_DAYS before today, not at today itself. Waits for
+  // the first real fetch to land (not just mount) before scrolling — same
+  // reasoning as Calendar's own version of this: date columns here have a
+  // fixed width regardless of data, so this is more defensive than a
+  // proven-necessary fix, but cheap enough to apply for the same safety.
+  const hasAutoScrolledRef = useRef(false)
   useEffect(() => {
+    if (hasAutoScrolledRef.current || loading) return
+    hasAutoScrolledRef.current = true
     todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [loading])
 
   function goToday() {
     todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest', behavior: 'smooth' })
