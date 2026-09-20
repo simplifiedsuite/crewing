@@ -51,6 +51,17 @@ func crewCTAURL(path string) string {
 	return origin + "/crew" + path
 }
 
+// staffCTAURL — scheduler/staff's own equivalent, at the root of the
+// frontend rather than under /crew (see App.tsx's SchedulerShell vs
+// CrewShell split).
+func staffCTAURL(path string) string {
+	origin := os.Getenv("FRONTEND_ORIGIN")
+	if origin == "" {
+		origin = "http://localhost:5173"
+	}
+	return origin + path
+}
+
 // bookingWithPersonResponse adds the booked person's name onto the plain
 // Booking shape — Jobs' JobRoleRow shows actual names now, not just counts,
 // and needs that in the same call rather than a separate lookup per

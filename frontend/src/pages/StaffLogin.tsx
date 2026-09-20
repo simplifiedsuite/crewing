@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { useStaffAuth, ApiError } from '../context/StaffAuthContext'
 
 export function StaffLogin() {
@@ -40,8 +41,13 @@ export function StaffLogin() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
-          style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #DCE3E7', marginBottom: 14, fontSize: 14 }}
+          style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #DCE3E7', marginBottom: 6, fontSize: 14 }}
         />
+        <div style={{ textAlign: 'right', marginBottom: 14 }}>
+          <Link to="/forgot-password" style={{ fontSize: 12.5, color: '#453E96', textDecoration: 'none' }}>
+            Forgot password?
+          </Link>
+        </div>
         {error && <div style={{ color: '#B42318', fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
         <button
           type="submit"

@@ -3,6 +3,8 @@ import { Route, Routes } from 'react-router-dom'
 import { StaffAuthProvider, useStaffAuth } from './context/StaffAuthContext'
 import { CrewAuthProvider, useCrewAuth } from './context/CrewAuthContext'
 import { StaffLogin } from './pages/StaffLogin'
+import { StaffForgotPassword } from './pages/StaffForgotPassword'
+import { StaffResetPassword } from './pages/StaffResetPassword'
 import { CrewLogin } from './pages/CrewLogin'
 import { CrewForgotPassword } from './pages/CrewForgotPassword'
 import { CrewResetPassword } from './pages/CrewResetPassword'
@@ -34,7 +36,18 @@ function SchedulerShell() {
   const isMobile = useIsMobileViewport()
 
   if (loading) return null
-  if (!user) return <StaffLogin />
+  if (!user) {
+    // Same reasoning as CrewShell's own logged-out branch: everywhere else
+    // in the scheduler shell is state-driven, not URL-driven, but forgot/
+    // reset-password need real, deep-linkable routes.
+    return (
+      <Routes>
+        <Route path="forgot-password" element={<StaffForgotPassword />} />
+        <Route path="reset-password" element={<StaffResetPassword />} />
+        <Route path="*" element={<StaffLogin />} />
+      </Routes>
+    )
+  }
   // Gate before anything else renders: RaltoDesktopApp/RaltoMobileApp never
   // mount while this is true, so none of their data-fetching hooks fire —
   // there's no route to "skip past" this by navigating directly on the
