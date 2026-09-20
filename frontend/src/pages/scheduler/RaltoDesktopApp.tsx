@@ -1113,6 +1113,11 @@ function CalendarContent({
   function scrollToToday() {
     suppressScrollHandlingRef.current = true
     todayRowRef.current?.scrollIntoView({ block: 'start' })
+    // handleScroll is what normally keeps visibleMonthLabel in sync, and
+    // it's suppressed for the duration of this jump (that's the whole
+    // point) — so it never fires to update the label here. Set it
+    // directly instead; we already know exactly where we're landing.
+    setVisibleMonthLabel(`${MONTH_LABELS[todayWeekStart.getMonth()]} ${todayWeekStart.getFullYear()}`)
     // Two rAFs: the first waits for the browser to actually paint the
     // scroll just performed, the second waits for any scroll event(s)
     // that paint produced to have already reached handleScroll (which
@@ -4937,6 +4942,10 @@ function ResourceCalendarContent({
   function scrollToToday() {
     suppressScrollHandlingRef.current = true
     todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest' })
+    // Same reasoning as Calendar's own scrollToToday: handleScroll (which
+    // normally keeps visibleMonthLabel in sync) is suppressed for the
+    // duration of this jump, so it never fires to update the label here.
+    setVisibleMonthLabel(`${MONTH_LABELS[today.getMonth()]} ${today.getFullYear()}`)
     requestAnimationFrame(() => requestAnimationFrame(() => {
       suppressScrollHandlingRef.current = false
     }))
