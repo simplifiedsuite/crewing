@@ -983,6 +983,16 @@ function CalendarContent({
   // expansion per edge is ever in flight at a time.
   const expandingTopRef = useRef(false)
   const expandingBottomRef = useRef(false)
+  // Bug fix — found live-testing: a programmatic scrollIntoView (the
+  // initial auto-scroll-to-today, or clicking "Today" from far away) was
+  // itself triggering handleScroll while still in transit toward its
+  // target, tripping the edge-detection logic and queueing extra
+  // expansions the scheduler never asked for (confirmed: 41 weeks ended up
+  // rendered instead of the intended 17). Suppressing edge-detection
+  // entirely for the duration of any programmatic scroll — regardless of
+  // the exact browser mechanism producing the extra scroll event(s) —
+  // closes off that whole class of bug rather than chasing one cause.
+  const suppressScrollHandlingRef = useRef(false)
   const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[todayWeekStart.getMonth()]} ${todayWeekStart.getFullYear()}`)
 
   const openEvents = useMemo(() => prospectiveEvents.filter((e) => e.status === 'open'), [prospectiveEvents])
@@ -1030,7 +1040,7 @@ function CalendarContent({
 
   function handleScroll() {
     const el = scrollRef.current
-    if (!el) return
+    if (!el || suppressScrollHandlingRef.current) return
     if (el.scrollTop < CALENDAR_EDGE_THRESHOLD_PX && !expandingTopRef.current) {
       // Prepending shifts everything below down by the height just added —
       // compensated in the layout effect below, keyed off rangeStart.
@@ -1091,11 +1101,30 @@ function CalendarContent({
   useEffect(() => {
     if (hasAutoScrolledRef.current || calendarJobs.length === 0 || eventsLoading) return
     hasAutoScrolledRef.current = true
-    todayRowRef.current?.scrollIntoView({ block: 'start' })
+    scrollToToday()
   }, [calendarJobs, eventsLoading])
 
+  // Instant, not smooth — deliberately: a smooth scroll runs over several
+  // hundred ms of real time, and the suppression window below only needs
+  // to (and only reliably can) cover a couple of frames. An instant jump
+  // keeps "suppressed for a couple of rAFs" actually true for the whole
+  // scroll, rather than releasing the guard mid-animation and reopening
+  // the exact bug this is fixing.
+  function scrollToToday() {
+    suppressScrollHandlingRef.current = true
+    todayRowRef.current?.scrollIntoView({ block: 'start' })
+    // Two rAFs: the first waits for the browser to actually paint the
+    // scroll just performed, the second waits for any scroll event(s)
+    // that paint produced to have already reached handleScroll (which
+    // bails out early while suppressed) — a reliable "after it's truly
+    // settled" without a magic-number setTimeout.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      suppressScrollHandlingRef.current = false
+    }))
+  }
+
   function goToday() {
-    todayRowRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    scrollToToday()
   }
 
   return (
@@ -4822,6 +4851,9 @@ function ResourceCalendarContent({
   // comment for why this is needed, not just a nice-to-have.
   const expandingStartRef = useRef(false)
   const expandingEndRef = useRef(false)
+  // Same suppress-during-programmatic-scroll fix as Calendar's own — see
+  // that component's comment for the live-tested bug this closes off.
+  const suppressScrollHandlingRef = useRef(false)
   const [visibleMonthLabel, setVisibleMonthLabel] = useState(`${MONTH_LABELS[today.getMonth()]} ${today.getFullYear()}`)
 
   // Testing feedback item D: a second scheduler's changes (a new booking,
@@ -4839,7 +4871,7 @@ function ResourceCalendarContent({
 
   function handleScroll() {
     const el = scrollRef.current
-    if (!el) return
+    if (!el || suppressScrollHandlingRef.current) return
     const thresholdPx = TEAM_EDGE_THRESHOLD_DAYS * colWidth
     if (el.scrollLeft < thresholdPx && !expandingStartRef.current) {
       // Prepending days shifts everything to the right by the width just
@@ -4895,11 +4927,23 @@ function ResourceCalendarContent({
   useEffect(() => {
     if (hasAutoScrolledRef.current || loading) return
     hasAutoScrolledRef.current = true
-    todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest' })
+    scrollToToday()
   }, [loading])
 
+  // Instant, not smooth — see Calendar's own scrollToToday for why: the
+  // suppression window only reliably covers a couple of frames, and a
+  // smooth scroll runs for several hundred ms, so smooth would release the
+  // guard mid-animation and reopen the exact bug this closes.
+  function scrollToToday() {
+    suppressScrollHandlingRef.current = true
+    todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest' })
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      suppressScrollHandlingRef.current = false
+    }))
+  }
+
   function goToday() {
-    todayColRef.current?.scrollIntoView({ inline: 'start', block: 'nearest', behavior: 'smooth' })
+    scrollToToday()
   }
 
   // Explicitly-added rows are session state only, never persisted — see
