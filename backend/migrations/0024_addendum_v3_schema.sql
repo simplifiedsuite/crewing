@@ -60,6 +60,11 @@ ALTER TYPE notification_type ADD VALUE 'booking_pencilled';
 -- every org except LDM.tv, see the paired seed migration) won't have a
 -- populated row yet, and every future read of this table has to treat
 -- "no row" and "row with nulls" as equally normal, not exceptional.
+-- payment_terms_days/invoice_window_days/cancellation_notice_hours carry
+-- real DEFAULTs (30/180/48) per addendum v3 §5 — the one place this table
+-- isn't "blank until configured": a brand-new org's row still gets sane
+-- buyout terms for these three even before anyone's touched Settings, and
+-- they happen to equal LDM.tv's own seeded values too.
 CREATE TABLE org_buyout_settings (
     id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organisation_id           UUID NOT NULL,
@@ -71,9 +76,9 @@ CREATE TABLE org_buyout_settings (
     rate_query_contact_name   TEXT,
     rate_query_contact_email  TEXT,
     accident_report_url       TEXT,
-    payment_terms_days        INT,
-    invoice_window_days       INT,
-    cancellation_notice_hours INT,
+    payment_terms_days        INT DEFAULT 30,
+    invoice_window_days       INT DEFAULT 180,
+    cancellation_notice_hours INT DEFAULT 48,
     created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
 );

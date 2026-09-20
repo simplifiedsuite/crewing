@@ -567,7 +567,11 @@ type NotificationDelivery struct {
 // except LDM.tv — see migrations/0025_ldm_buyout_settings_seed.sql), and
 // callers must treat "no row" and "row with nulls" as equally normal, not
 // exceptional. The buyout-PDF generation this feeds is later work — this
-// stage is the schema and struct only.
+// stage is the schema and struct only. PaymentTermsDays/InvoiceWindowDays/
+// CancellationNoticeHours are the one exception to "blank until
+// configured": the DB column carries a real default (30/180/48 — addendum
+// v3 §5), so a freshly-inserted row without those three set still gets
+// sane values rather than null.
 type OrgBuyoutSettings struct {
 	ID                      string    `json:"id"`
 	OrganisationID          string    `json:"organisation_id"`
