@@ -372,7 +372,21 @@ function JobDetailScreen({ job, onBack }: { job: CrewBooking; onBack: () => void
           <Row
             icon={User}
             label="Also confirmed"
-            value={crew.map((c) => `${c.first_name} ${c.last_name} — ${c.role_name}`).join(', ')}
+            value={
+              // One person per line — matches the scheduler's own crewing
+              // list (JobRoleRow's bookings.map, RaltoDesktopApp.tsx), a
+              // flex column of rows rather than a single joined value.
+              // Bug fix: this used to be one comma-joined string, which
+              // read as a dense paragraph once more than a couple of
+              // people were confirmed.
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {crew.map((c) => (
+                  <div key={c.person_id}>
+                    {c.first_name} {c.last_name} — {c.role_name}
+                  </div>
+                ))}
+              </div>
+            }
           />
         </>
       )}
