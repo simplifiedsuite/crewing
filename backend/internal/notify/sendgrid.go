@@ -37,7 +37,7 @@ func NewClient() *Client {
 	}
 	fromName := os.Getenv("SENDGRID_FROM_NAME")
 	if fromName == "" {
-		fromName = "Ralto"
+		fromName = "Crewing"
 	}
 	return &Client{apiKey: apiKey, fromEmail: fromEmail, fromName: fromName, http: &http.Client{}}
 }

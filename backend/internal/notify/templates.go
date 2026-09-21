@@ -15,7 +15,7 @@ import "fmt"
 func RenderBookingOffered(role, jobName, dates, ctaURL string) (subject, body string) {
 	subject = fmt.Sprintf("New offer: %s on %s", role, jobName)
 	body = fmt.Sprintf(
-		`You've been offered %s on %s, %s. <a href="%s">Open Ralto to accept or decline</a>.`,
+		`You've been offered %s on %s, %s. <a href="%s">Open Crewing to accept or decline</a>.`,
 		role, jobName, dates, ctaURL,
 	)
 	return subject, body
@@ -24,7 +24,7 @@ func RenderBookingOffered(role, jobName, dates, ctaURL string) (subject, body st
 func RenderBookingConfirmed(role, jobName, dates, ctaURL string) (subject, body string) {
 	subject = fmt.Sprintf("Confirmed: %s on %s", role, jobName)
 	body = fmt.Sprintf(
-		`You're confirmed for %s on %s, %s. <a href="%s">Open Ralto for full shift details and call times</a>.`,
+		`You're confirmed for %s on %s, %s. <a href="%s">Open Crewing for full shift details and call times</a>.`,
 		role, jobName, dates, ctaURL,
 	)
 	return subject, body
@@ -33,13 +33,13 @@ func RenderBookingConfirmed(role, jobName, dates, ctaURL string) (subject, body 
 // RenderBookingPencilled — Addendum v3 §1/§4: the informal "you said yes"
 // hold notice, once a freelancer has responded (either path) but before a
 // scheduler presses Confirm. Deliberately more detailed inline than
-// RenderBookingOffered/RenderBookingConfirmed (which lean on "open Ralto
+// RenderBookingOffered/RenderBookingConfirmed (which lean on "open Crewing
 // for details") — no rate, no buyout, no PDF, per the addendum's own
 // explicit exclusions for this one.
 func RenderBookingPencilled(role, jobName, dates, venue, callTime, ctaURL string) (subject, body string) {
 	subject = fmt.Sprintf("You're pencilled: %s on %s", role, jobName)
 	body = fmt.Sprintf(
-		`You're pencilled for %s on %s, %s at %s (call time %s). This is an informal hold — a scheduler will confirm once everything's settled. <a href="%s">Open Ralto for details</a>.`,
+		`You're pencilled for %s on %s, %s at %s (call time %s). This is an informal hold — a scheduler will confirm once everything's settled. <a href="%s">Open Crewing for details</a>.`,
 		role, jobName, dates, venue, callTime, ctaURL,
 	)
 	return subject, body
@@ -47,7 +47,7 @@ func RenderBookingPencilled(role, jobName, dates, venue, callTime, ctaURL string
 
 func RenderBookingUpdated(jobName, changeDescription, ctaURL string) (subject, body string) {
 	subject = fmt.Sprintf("Update: %s", jobName)
-	body = fmt.Sprintf(`%s. <a href="%s">Open Ralto to review and acknowledge</a>.`, changeDescription, ctaURL)
+	body = fmt.Sprintf(`%s. <a href="%s">Open Crewing to review and acknowledge</a>.`, changeDescription, ctaURL)
 	return subject, body
 }
 
@@ -60,7 +60,7 @@ func RenderBookingCancelled(role, jobName, dates string) (subject, body string) 
 func RenderShiftReminder(jobName, callTime, venue, ctaURL string) (subject, body string) {
 	subject = fmt.Sprintf("Reminder: %s today", jobName)
 	body = fmt.Sprintf(
-		`Call time %s at %s. <a href="%s">Open Ralto for full details</a>.`,
+		`Call time %s at %s. <a href="%s">Open Crewing for full details</a>.`,
 		callTime, venue, ctaURL,
 	)
 	return subject, body
@@ -69,7 +69,7 @@ func RenderShiftReminder(jobName, callTime, venue, ctaURL string) (subject, body
 func RenderAvailabilityRequest(dates, location, ctaURL string) (subject, body string) {
 	subject = fmt.Sprintf("Availability check: %s", dates)
 	body = fmt.Sprintf(
-		`Are you available %s for %s? <a href="%s">Respond via Ralto</a>.`,
+		`Are you available %s for %s? <a href="%s">Respond via Crewing</a>.`,
 		dates, location, ctaURL,
 	)
 	return subject, body
