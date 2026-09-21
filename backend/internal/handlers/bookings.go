@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -49,22 +48,14 @@ func (a *API) loadBookingContext(ctx context.Context, bookingID string) (booking
 }
 
 func crewCTAURL(path string) string {
-	origin := os.Getenv("FRONTEND_ORIGIN")
-	if origin == "" {
-		origin = "http://localhost:5173"
-	}
-	return origin + "/crew" + path
+	return frontendOrigin() + "/crew" + path
 }
 
 // staffCTAURL — scheduler/staff's own equivalent, at the root of the
 // frontend rather than under /crew (see App.tsx's SchedulerShell vs
 // CrewShell split).
 func staffCTAURL(path string) string {
-	origin := os.Getenv("FRONTEND_ORIGIN")
-	if origin == "" {
-		origin = "http://localhost:5173"
-	}
-	return origin + path
+	return frontendOrigin() + path
 }
 
 // bookingWithPersonResponse adds the booked person's name onto the plain

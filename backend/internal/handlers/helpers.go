@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,32 @@ import (
 	"ralto/internal/notify"
 	"ralto/internal/tenancy"
 )
+
+// frontendOrigin is the single canonical frontend origin every email CTA
+// link (password reset, booking offer/response, availability request) is
+// built against. Reads FRONTEND_ORIGINS — the same env var cmd/api/main.go
+// already uses for CORS — rather than a second, separately-configured
+// value that could silently drift out of sync with it. Comma-separated,
+// same convention as main.go's own splitOrigins; takes the first entry as
+// canonical (today there's realistically only one — scheduler and crew
+// share this same frontend, just different paths — "first" is a
+// reasonable choice if the list ever does grow to more than one, per
+// main.go's own comment on why it's plural).
+//
+// Previously each CTA-URL builder read a FRONTEND_ORIGIN (singular) env
+// var that was never actually set in production — only the plural
+// FRONTEND_ORIGINS was, for CORS — so every one of these links silently
+// fell back to its http://localhost:5173 default on every real send,
+// including every password reset email ever sent. Fixed by having them
+// all read the one env var that was actually configured correctly.
+func frontendOrigin() string {
+	for _, part := range strings.Split(os.Getenv("FRONTEND_ORIGINS"), ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "http://localhost:5173"
+}
 
 // currentOrgID is the one shared value every Create*/List*/Get*/Update*/
 // Delete* query on an organisation-scoped table threads through — see

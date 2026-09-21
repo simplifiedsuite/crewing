@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -63,11 +62,7 @@ func (a *API) invalidateBookingResponseTokens(ctx context.Context, bookingID str
 }
 
 func bookingResponseURL(token string) string {
-	origin := os.Getenv("FRONTEND_ORIGIN")
-	if origin == "" {
-		origin = "http://localhost:5173"
-	}
-	return origin + "/respond/" + token
+	return frontendOrigin() + "/respond/" + token
 }
 
 // offerCTAURL decides what an offer email's link actually points to.
