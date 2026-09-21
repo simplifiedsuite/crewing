@@ -3,7 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- maximum-scale + user-scalable=no matter specifically for iOS's
+         "Add to Home Screen" standalone launch: without them, that
+         standalone WKWebView shell skips the auto-fit scaling a normal
+         Safari tab applies and renders the crew/scheduler mobile app
+         zoomed in on first paint, only correcting once a scroll forces
+         WebKit to recompute the real scale. Not the same root cause as
+         the earlier dvh-shell bottom-nav fix (checked before assuming) —
+         that was a viewport-height calculation issue, this is a
+         viewport-scale one. The app's touch UI is already sized for
+         fixed pixel text/targets, not designed for in-page pinch-zoom, so
+         losing that (not iOS's separate system accessibility zoom, which
+         this doesn't affect) is an acceptable trade-off here. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Crewing</title>
   </head>
   <body>

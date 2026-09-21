@@ -282,6 +282,15 @@ export interface JobContact {
   phone?: string
 }
 
+// CrewOnJob — one other Confirmed person on the same Job as the caller's
+// own booking (GET /crew/bookings/{id}/crew). Name + role only.
+export interface CrewOnJob {
+  person_id: string
+  first_name: string
+  last_name: string
+  role_name: string
+}
+
 // JobDayLabel — testing feedback R: what a specific day within a Job's own
 // date range means (e.g. "Rig", "Match day"), independent of who's booked.
 export interface JobDayLabel {

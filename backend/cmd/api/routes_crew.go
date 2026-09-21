@@ -24,6 +24,7 @@ func registerCrewRoutes(r chi.Router, api *handlers.API) {
 		r.Get("/bookings", api.ListMyBookings)
 		r.Get("/bookings/{id}", api.GetMyBooking)
 		r.Get("/bookings/{id}/contact", api.GetMyBookingContact)
+		r.Get("/bookings/{id}/crew", api.GetMyBookingCrew)
 		r.Post("/offers/{id}/respond", api.RespondToOffer)
 		r.Post("/bookings/{id}/acknowledge", api.AcknowledgeBooking)
 		r.Post("/bookings/{id}/timesheet", api.SubmitTimesheet)

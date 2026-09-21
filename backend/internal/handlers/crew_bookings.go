@@ -283,6 +283,67 @@ func (a *API) GetMyBookingContact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, contact)
 }
 
+// crewOnJob is one other person confirmed on the same Job as the caller's
+// own booking — deliberately just name + role, not the full crewBookingResponse
+// shape (this is "who else is on this job", not another bookable resource).
+type crewOnJob struct {
+	PersonID  string `json:"person_id"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	RoleName  string `json:"role_name"`
+}
+
+// GetMyBookingCrew lists everyone else Confirmed on the same Job as the
+// caller's own booking — reported gap: a crew member had no way to see who
+// else was on a job. Confirmed only, never Pencilled/Offered/Declined —
+// someone merely asked (or provisionally held) isn't locked in yet, and a
+// crew member has no business knowing who's been approached. Same
+// ownership + Pencilled-visibility guard as GetMyBookingContact (see its
+// own comment) gates whether the caller can see this at all; the caller
+// themselves is excluded from the list (it answers "who ELSE").
+func (a *API) GetMyBookingCrew(w http.ResponseWriter, r *http.Request) {
+	claims, _ := middleware.CrewFromContext(r.Context())
+	bookingID := chi.URLParam(r, "id")
+
+	rows, err := a.DB.Query(r.Context(), `
+		SELECT p.id, p.first_name, p.last_name, ro.name
+		FROM bookings b2
+		JOIN job_requirements jr2 ON jr2.id = b2.job_requirement_id
+		JOIN roles ro ON ro.id = jr2.role_id
+		JOIN people p ON p.id = b2.person_id
+		WHERE jr2.job_id = (
+			SELECT jr.job_id
+			FROM bookings b
+			JOIN job_requirements jr ON jr.id = b.job_requirement_id
+			WHERE b.id = $1 AND b.person_id = $2 AND b.organisation_id = $3
+			      AND (b.status != 'pencilled' OR b.response_channel IS NOT NULL OR EXISTS (
+			            SELECT 1 FROM people pp WHERE pp.id = $2 AND pp.organisation_id = $3 AND pp.employment_type = 'staff'
+			          ))
+		)
+		AND b2.status = 'confirmed'
+		AND b2.person_id != $2
+		AND b2.organisation_id = $3
+		ORDER BY p.first_name, p.last_name`,
+		bookingID, claims.PersonID, currentOrgID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get job crew")
+		return
+	}
+	defer rows.Close()
+
+	out := []crewOnJob{}
+	for rows.Next() {
+		var c crewOnJob
+		if err := rows.Scan(&c.PersonID, &c.FirstName, &c.LastName, &c.RoleName); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to get job crew")
+			return
+		}
+		out = append(out, c)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // AcknowledgeBooking is the crew-side "Acknowledge" action on a
 // booking_updated notification (call-time/venue/date change) — resolves
 // the matching unacknowledged_update OperationalAlert raised by

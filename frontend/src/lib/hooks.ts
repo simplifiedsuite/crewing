@@ -677,6 +677,31 @@ export function updateBookingDateRange(booking: Booking, startDate: string, endD
   })
 }
 
+// updateBookingCallTime — same gap as updateBookingDateRange above:
+// UpdateBooking already accepted call_time server-side (and already fires
+// booking_updated when it actually changes), but nothing in the UI ever
+// called it with one. Per-booking, not per-JobRequirement, since two
+// people on the same role can genuinely need different call times (see
+// booking_shifts' own per-day granularity for the even finer case this
+// doesn't attempt to cover). Unlike updateBookingDateRange, the date range
+// itself isn't changing here, so this explicitly passes the booking's
+// existing shift_dates as `days` — omitting it would make resolveShiftDays
+// default to the full range server-side, silently wiping out any
+// day-level narrowing (item L) a call-time-only edit has no business
+// touching. An empty/absent shift_dates (pre-item-L booking, never
+// narrowed) is passed through as-is, which resolveShiftDays already
+// treats as "full range" — the correct fallback.
+export function updateBookingCallTime(booking: Booking, callTime: string) {
+  return api.put<Booking>(`/bookings/${booking.id}`, {
+    start_date: booking.start_date,
+    end_date: booking.end_date,
+    call_time: callTime || null,
+    rate_override: booking.rate_override ?? null,
+    notes: booking.notes ?? null,
+    days: booking.shift_dates ?? [],
+  })
+}
+
 export function confirmBooking(id: string) {
   return api.post<Booking>(`/bookings/${id}/confirm`)
 }

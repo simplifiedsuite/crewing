@@ -3,7 +3,7 @@ import { Home as HomeIcon, Calendar as CalendarIcon, CalendarCheck, User, Chevro
 import { api, ApiError } from '../../lib/api'
 import { formatDate, formatDateRange, formatTime } from '../../lib/format'
 import { useCrewAuth } from '../../context/CrewAuthContext'
-import type { Availability, AvailabilityRequest, AvailabilityResponseValue, CrewBooking, JobContact, OperationalAlert, Person, PersonDocument } from '../../types'
+import type { Availability, AvailabilityRequest, AvailabilityResponseValue, CrewBooking, CrewOnJob, JobContact, OperationalAlert, Person, PersonDocument } from '../../types'
 
 // ---------------------------------------------------------------------------
 // Ralto crew app — converted from ralto-crew-mobile.jsx. Renders
@@ -323,12 +323,23 @@ function HomeScreen({ bookings, alerts, onRespond, onAcknowledge, onOpenJob }: {
 
 function JobDetailScreen({ job, onBack }: { job: CrewBooking; onBack: () => void }) {
   const [contact, setContact] = useState<JobContact | null>(null)
+  const [crew, setCrew] = useState<CrewOnJob[]>([])
 
   useEffect(() => {
     api
       .get<JobContact>(`/crew/bookings/${job.id}/contact`)
       .then(setContact)
       .catch(() => setContact(null))
+  }, [job.id])
+
+  // Reported gap: no way to see who else is confirmed on a job. Confirmed
+  // only — see GetMyBookingCrew server-side for why Pencilled/Offered are
+  // deliberately excluded.
+  useEffect(() => {
+    api
+      .get<CrewOnJob[]>(`/crew/bookings/${job.id}/crew`)
+      .then(setCrew)
+      .catch(() => setCrew([]))
   }, [job.id])
 
   return (
@@ -355,6 +366,16 @@ function JobDetailScreen({ job, onBack }: { job: CrewBooking; onBack: () => void
       <Row icon={MapPin} label="Venue" value={<VenueValue job={job} fallback="Not yet set" />} />
       <Divider />
       <Row icon={Phone} label="Production contact" value={contact ? `${contact.name}${contact.role_title ? ' · ' + contact.role_title : ''}${contact.phone ? ' · ' + contact.phone : ''}` : 'Not yet assigned'} />
+      {crew.length > 0 && (
+        <>
+          <Divider />
+          <Row
+            icon={User}
+            label="Also confirmed"
+            value={crew.map((c) => `${c.first_name} ${c.last_name} — ${c.role_name}`).join(', ')}
+          />
+        </>
+      )}
       {job.notes && (
         <>
           <Divider />

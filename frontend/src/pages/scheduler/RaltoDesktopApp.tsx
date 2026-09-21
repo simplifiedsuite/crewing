@@ -96,6 +96,7 @@ import {
   recordBookingResponse,
   updateBookingDays,
   updateBookingDateRange,
+  updateBookingCallTime,
   useBookingsForRequirement,
   listBookingsForRequirement,
   createPerson,
@@ -1831,6 +1832,129 @@ function BookingDateRangeEditor({ booking, onUpdated }: { booking: Booking; onUp
   )
 }
 
+// BookingCallTimeEditor — Booking.call_time already round-tripped through
+// UpdateBooking server-side (and already fires booking_updated when it
+// actually changes), but nothing in the UI ever set it, so every real
+// booking sat permanently NULL. Per-booking rather than per-JobRequirement
+// — two people on the same role can genuinely need different call times
+// (e.g. a rigger in before the on-air talent) — so this lives right next
+// to BookingDateRangeEditor/BookingDaysBadge on each person's own row, not
+// on the role-level "Add role" form.
+// bookingCallTimeValue — <input type="time"> without a `step` covering
+// seconds only accepts/renders "HH:MM"; Postgres TIME round-trips through
+// the API as "HH:MM:SS". Trimming here (not just for display) matters
+// because assigning an "HH:MM:SS" string straight to a time input's value
+// is unreliable across browsers.
+function bookingCallTimeValue(callTime?: string): string {
+  return (callTime ?? '').slice(0, 5)
+}
+
+function BookingCallTimeEditor({ booking, onUpdated }: { booking: Booking; onUpdated: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [callTime, setCallTime] = useState(bookingCallTimeValue(booking.call_time))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  function startEditing() {
+    setCallTime(bookingCallTimeValue(booking.call_time))
+    setError(undefined)
+    setEditing(true)
+  }
+
+  async function save() {
+    if (callTime === bookingCallTimeValue(booking.call_time)) {
+      setEditing(false)
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      await updateBookingCallTime(booking, callTime)
+      setEditing(false)
+      onUpdated()
+    } catch {
+      setError('Could not update the call time — try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={startEditing}
+        title={booking.call_time ? `Call time: ${booking.call_time.slice(0, 5)}` : 'Set call time'}
+        style={{
+          border: 'none',
+          background: 'none',
+          cursor: 'pointer',
+          padding: 2,
+          color: booking.call_time ? 'var(--ink)' : 'var(--ink-muted)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 3,
+          fontFamily: 'var(--font)',
+          fontSize: 11,
+        }}
+      >
+        <Clock size={13} />
+        {booking.call_time ? booking.call_time.slice(0, 5) : null}
+      </button>
+    )
+  }
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        zIndex: 5,
+        right: 0,
+        top: '100%',
+        marginTop: 4,
+        border: '1px solid var(--line)',
+        background: '#fff',
+        borderRadius: 8,
+        padding: 10,
+        boxShadow: '0 4px 16px rgba(0,0,0,0.14)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        minWidth: 160,
+      }}
+    >
+      <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, color: 'var(--ink)' }}>Call time</div>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 2, fontFamily: 'var(--font)', fontSize: 11, color: 'var(--ink-muted)' }}>
+        Time
+        <input
+          type="time"
+          value={callTime}
+          onChange={(e) => setCallTime(e.target.value)}
+          style={{ border: '1px solid var(--line)', borderRadius: 6, padding: '4px 6px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}
+        />
+      </label>
+      {error && <div style={{ fontFamily: 'var(--font)', fontSize: 11, color: 'var(--danger)' }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          style={{ flex: 1, border: '1px solid var(--line)', background: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', color: 'var(--ink-muted)' }}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          style={{ flex: 1, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 6, padding: '4px 0', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function BookedPersonRow({
   booking,
   onConfirm,
@@ -1874,6 +1998,7 @@ function BookedPersonRow({
         </span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <BookingCallTimeEditor booking={booking} onUpdated={onDaysUpdated} />
         <BookingDateRangeEditor booking={booking} onUpdated={onDaysUpdated} />
         <BookingDaysBadge booking={booking} onUpdated={onDaysUpdated} dayLabels={dayLabels} />
         {canRecordResponse && (

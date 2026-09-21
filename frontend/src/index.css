@@ -6,6 +6,16 @@ body {
   margin: 0;
 }
 
+/* WebKit's automatic text-size-boosting (meant for a non-mobile-optimized
+   desktop page opened on a phone) has no business kicking in here — every
+   screen already sets its own fixed pixel font sizes for a phone-native
+   layout. Left alone, it can compound the "zoomed in on launch" bug fixed
+   by index.html's viewport meta (maximum-scale/user-scalable) rather than
+   being neutral — pin it off page-wide. */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 /* Shared by every mobile-width app shell (RaltoMobileApp, RaltoCrewApp) —
    each is a flex column with a scrollable content region (flex: 1;
    overflowY: auto) and a bottom-pinned nav bar as its last child. That only
