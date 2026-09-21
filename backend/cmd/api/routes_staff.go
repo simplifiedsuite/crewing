@@ -199,5 +199,12 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Patch("/{id}/password", api.AdminResetPassword)
 			r.Delete("/{id}", api.DeleteUser)
 		})
+
+		// Temporary — verifying the FRONTEND_ORIGIN(S) CTA-link fix against
+		// production. Remove once confirmed.
+		r.Route("/debug", func(r chi.Router) {
+			r.Use(middleware.RequireAdmin)
+			r.Get("/frontend-origin", api.DebugFrontendOrigin)
+		})
 	})
 }
