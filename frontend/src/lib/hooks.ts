@@ -790,6 +790,17 @@ export function createAvailability(
   return api.post(`/people/${personId}/availability`, input)
 }
 
+// updateAvailability — previously the only way to change an existing
+// entry's dates/reason was delete + re-create, unlike Prospective Events
+// which already got a direct edit (updateProspectiveEvent above).
+export function updateAvailability(
+  personId: string,
+  availabilityId: string,
+  input: { start_date: string; end_date: string; status: AvailabilityStatus; type?: AvailabilityType; day_portion?: AvailabilityDayPortion; notes?: string },
+) {
+  return api.put(`/people/${personId}/availability/${availabilityId}`, input)
+}
+
 export function deleteAvailability(personId: string, availabilityId: string) {
   return api.delete(`/people/${personId}/availability/${availabilityId}`)
 }

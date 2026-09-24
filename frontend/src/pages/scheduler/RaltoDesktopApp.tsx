@@ -50,6 +50,7 @@ import {
   useCandidates,
   useAvailability,
   createAvailability,
+  updateAvailability,
   deleteAvailability,
   useScheduleItHistory,
   useProspectiveEvents,
@@ -6251,7 +6252,7 @@ function availabilityStatusColor(status: AvailabilityStatus) {
   return { color: 'var(--success)', bg: 'var(--success-bg)' }
 }
 
-function AvailabilityRow({ entry, onDelete }: { entry: Availability; onDelete: () => void }) {
+function AvailabilityRow({ entry, onEdit, onDelete }: { entry: Availability; onEdit: () => void; onDelete: () => void }) {
   const tone = availabilityStatusColor(entry.status)
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, border: '1px solid var(--line)', borderRadius: 10, padding: '10px 14px', background: '#fff' }}>
@@ -6266,6 +6267,9 @@ function AvailabilityRow({ entry, onDelete }: { entry: Availability; onDelete: (
         </div>
         {entry.notes && <div style={{ fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink-muted)', marginTop: 2 }}>{entry.notes}</div>}
       </div>
+      <button onClick={onEdit} title="Edit entry" style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
+        <Pencil size={14} />
+      </button>
       <button onClick={onDelete} title="Remove entry" style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 4, color: 'var(--ink-muted)' }}>
         <Trash2 size={14} />
       </button>
@@ -6282,6 +6286,12 @@ function AddAvailabilityForm({
   employmentType,
   initialStartDate,
   initialEndDate,
+  // editingEntry — same form, reused for editing (matching
+  // AddProspectiveEventForm's own editingEvent pattern): seeds every
+  // field from the existing entry and calls updateAvailability instead of
+  // create at submit time. Previously the only way to change dates/reason
+  // on an entry — even just extending it by a day — was delete + re-add.
+  editingEntry,
   onSaved,
   onCancel,
 }: {
@@ -6290,21 +6300,23 @@ function AddAvailabilityForm({
   // Planner's "Not available" follow-up defaults this to the requirement's
   // own dates rather than today, since the whole point there is "mark them
   // unavailable for (at least) the dates just declined" — still editable,
-  // just a different starting point than the Crew-tab call site.
+  // just a different starting point than the Crew-tab call site. Ignored
+  // when editingEntry is set.
   initialStartDate?: string
   initialEndDate?: string
+  editingEntry?: Availability
   onSaved: () => void
   onCancel: () => void
 }) {
-  const [startDate, setStartDate] = useState(initialStartDate ?? todayISO())
-  const [endDate, setEndDate] = useState(initialEndDate ?? todayISO())
-  const [status, setStatus] = useState<AvailabilityStatus>('unavailable')
-  const [type, setType] = useState<AvailabilityType | ''>('')
+  const [startDate, setStartDate] = useState(editingEntry?.start_date ?? initialStartDate ?? todayISO())
+  const [endDate, setEndDate] = useState(editingEntry?.end_date ?? initialEndDate ?? todayISO())
+  const [status, setStatus] = useState<AvailabilityStatus>(editingEntry?.status ?? 'unavailable')
+  const [type, setType] = useState<AvailabilityType | ''>(editingEntry?.type ?? '')
   // Testing feedback S — half-day (AM/PM-only) entries, applied to the
   // whole date range same as status/type. Only meaningful on the two
   // "away" statuses — Available has nothing to be half of.
-  const [dayPortion, setDayPortion] = useState<AvailabilityDayPortion>('full')
-  const [notes, setNotes] = useState('')
+  const [dayPortion, setDayPortion] = useState<AvailabilityDayPortion>(editingEntry?.day_portion ?? 'full')
+  const [notes, setNotes] = useState(editingEntry?.notes ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
 
@@ -6335,14 +6347,19 @@ function AddAvailabilityForm({
     setSaving(true)
     setError(undefined)
     try {
-      await createAvailability(personId, {
+      const input = {
         start_date: startDate,
         end_date: endDate,
         status,
         type: status === 'unavailable' && type ? type : undefined,
         day_portion: status !== 'available' ? dayPortion : undefined,
         notes: notes || undefined,
-      })
+      }
+      if (editingEntry) {
+        await updateAvailability(personId, editingEntry.id, input)
+      } else {
+        await createAvailability(personId, input)
+      }
       onSaved()
     } catch {
       setError('Could not save that entry.')
@@ -6405,7 +6422,7 @@ function AddAvailabilityForm({
           disabled={saving || !startDate || !endDate}
           style={{ border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '7px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}
         >
-          {saving ? 'Saving…' : 'Add entry'}
+          {saving ? 'Saving…' : editingEntry ? 'Save changes' : 'Add entry'}
         </button>
       </div>
     </div>
@@ -6415,14 +6432,22 @@ function AddAvailabilityForm({
 function PersonAvailabilityTab({ person }: { person: Person }) {
   const { data: entries, loading, reload } = useAvailability(person.id)
   const [adding, setAdding] = useState(false)
+  // editingEntry — mutually exclusive with `adding`; opening one closes
+  // the other, same as AddProspectiveEventForm's own editingEvent pattern.
+  const [editingEntry, setEditingEntry] = useState<Availability | null>(null)
 
   const sorted = useMemo(() => [...entries].sort((a, b) => a.start_date.localeCompare(b.start_date)), [entries])
+
+  function closeForm() {
+    setAdding(false)
+    setEditingEntry(null)
+  }
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <span style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)' }}>Availability</span>
-        {!adding && (
+        {!adding && !editingEntry && (
           <button
             onClick={() => setAdding(true)}
             style={{ display: 'flex', alignItems: 'center', gap: 5, border: 'none', background: 'var(--primary)', color: '#fff', borderRadius: 8, padding: '7px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer' }}
@@ -6432,14 +6457,15 @@ function PersonAvailabilityTab({ person }: { person: Person }) {
         )}
       </div>
 
-      {adding && (
+      {(adding || editingEntry) && (
         <div style={{ marginBottom: 14 }}>
           <AddAvailabilityForm
             personId={person.id}
             employmentType={person.employment_type}
-            onCancel={() => setAdding(false)}
+            editingEntry={editingEntry ?? undefined}
+            onCancel={closeForm}
             onSaved={() => {
-              setAdding(false)
+              closeForm()
               reload()
             }}
           />
@@ -6448,7 +6474,15 @@ function PersonAvailabilityTab({ person }: { person: Person }) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {sorted.map((entry) => (
-          <AvailabilityRow key={entry.id} entry={entry} onDelete={() => deleteAvailability(person.id, entry.id).then(reload)} />
+          <AvailabilityRow
+            key={entry.id}
+            entry={entry}
+            onEdit={() => {
+              setAdding(false)
+              setEditingEntry(entry)
+            }}
+            onDelete={() => deleteAvailability(person.id, entry.id).then(reload)}
+          />
         ))}
         {!loading && sorted.length === 0 && !adding && (
           <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', padding: '12px 0' }}>No availability entries logged yet.</div>
