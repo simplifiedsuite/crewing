@@ -1158,6 +1158,52 @@ function CalendarContent({
     scrollToToday()
   }
 
+  // Testing feedback #51 — continuous scroll only supported reaching a
+  // far-off date by scrolling there manually. Reuses weekRefs (already
+  // built for changeMode's own scroll-position restore) rather than a
+  // second lookup mechanism: if the target week is already rendered,
+  // jump straight there; otherwise widen rangeStart/rangeEnd to cover it
+  // and let the effect below finish the jump once that week's row has
+  // actually mounted (weekRefs only gets a node once React commits it).
+  const pendingJumpWeekKeyRef = useRef<string | null>(null)
+  const pendingJumpWeekStartRef = useRef<Date | null>(null)
+
+  function scrollToWeek(node: HTMLDivElement, weekStart: Date) {
+    suppressScrollHandlingRef.current = true
+    node.scrollIntoView({ block: 'start' })
+    setVisibleMonthLabel(`${MONTH_LABELS[weekStart.getMonth()]} ${weekStart.getFullYear()}`)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      suppressScrollHandlingRef.current = false
+    }))
+  }
+
+  function jumpToDate(dateStr: string) {
+    const target = new Date(dateStr + 'T00:00:00')
+    if (isNaN(target.getTime())) return
+    const targetWeekStart = startOfWeek(target)
+    const key = targetWeekStart.toISOString()
+    const existingNode = weekRefs.current.get(key)
+    if (existingNode) {
+      scrollToWeek(existingNode, targetWeekStart)
+      return
+    }
+    pendingJumpWeekKeyRef.current = key
+    pendingJumpWeekStartRef.current = targetWeekStart
+    setRangeStart((d) => (targetWeekStart < d ? addWeeks(targetWeekStart, -1) : d))
+    setRangeEnd((d) => (targetWeekStart > d ? addWeeks(targetWeekStart, 1) : d))
+  }
+
+  useEffect(() => {
+    const key = pendingJumpWeekKeyRef.current
+    const weekStart = pendingJumpWeekStartRef.current
+    if (!key || !weekStart) return
+    const node = weekRefs.current.get(key)
+    if (!node) return
+    pendingJumpWeekKeyRef.current = null
+    pendingJumpWeekStartRef.current = null
+    scrollToWeek(node, weekStart)
+  }, [weekStarts])
+
   // Bug fix — found live-testing Team's identical issue and checking
   // whether Calendar shared it: Month/Week changes row height (tall bars +
   // inline text vs compact bars), so the week left unchanged at scrollTop
@@ -1243,9 +1289,19 @@ function CalendarContent({
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
         <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{visibleMonthLabel}</div>
-        <button onClick={goToday} style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)', cursor: 'pointer' }}>
-          Today
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="date"
+            onChange={(e) => {
+              if (e.target.value) jumpToDate(e.target.value)
+            }}
+            title="Jump to date"
+            style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 10px', fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}
+          />
+          <button onClick={goToday} style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)', cursor: 'pointer' }}>
+            Today
+          </button>
+        </div>
       </div>
 
       <div style={{ border: '1px solid var(--line)', borderRadius: 12, background: '#fff', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -3746,6 +3802,7 @@ function JobsContent({
   prefill,
   onConsumedPrefill,
   onOpenRoleInPlanner,
+  onOpenInPlanner,
 }: {
   summaries: JobSummary[]
   clients: Record<string, Client>
@@ -3765,6 +3822,11 @@ function JobsContent({
   prefill?: JobCreatePrefill
   onConsumedPrefill: () => void
   onOpenRoleInPlanner: (jobId: string, reqId: string) => void
+  // Testing feedback #52 — an explicit link to the same Job in Planner,
+  // independent of any specific role gap (onOpenRoleInPlanner above only
+  // ever appears next to an under-crewed role, so it disappears entirely
+  // once a job is fully crewed — this one is always available).
+  onOpenInPlanner: (jobId: string) => void
 }) {
   const [query, setQuery] = useState('')
   const [contacts, setContacts] = useState<JobContact[]>([])
@@ -4029,6 +4091,13 @@ function JobsContent({
                 style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
               >
                 <Pencil size={11} /> Edit
+              </button>
+              <button
+                onClick={() => onOpenInPlanner(selected.job.id)}
+                title="Open this job in Planner"
+                style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '5px 12px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11.5, cursor: 'pointer' }}
+              >
+                <CalendarRange size={11} /> Open in Planner
               </button>
               {pendingBookings.length > 0 && confirmEveryoneState === 'idle' && (
                 <button
@@ -4536,6 +4605,7 @@ function PlannerContent({
   clients,
   selectedJobId,
   onSelectJob,
+  onOpenInJobs,
   reloadSummaries,
   targetReqId,
   onConsumedTarget,
@@ -4544,6 +4614,11 @@ function PlannerContent({
   clients: Record<string, Client>
   selectedJobId: string | undefined
   onSelectJob: (id: string) => void
+  // Testing feedback #52 — the reverse of Jobs' own onOpenInPlanner:
+  // previously the only way to reach this same Job in Jobs was indirectly
+  // (there wasn't even a gap-based path this direction), so this is a new
+  // explicit link rather than an upgrade of an existing one.
+  onOpenInJobs: (jobId: string) => void
   reloadSummaries: () => void
   targetReqId?: string
   onConsumedTarget?: () => void
@@ -4672,11 +4747,20 @@ function PlannerContent({
 
       <div style={{ display: 'flex', gap: 24 }}>
         <div style={{ flex: 1 }}>
-          <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)', marginBottom: 12 }}>
-            Roles — {summary.job.name}{' '}
-            <span style={{ fontWeight: 500, color: 'var(--ink-muted)', opacity: 0.8 }}>
-              · {formatDate(summary.job.start_date)} – {formatDate(summary.job.end_date)}
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 14, color: 'var(--ink-muted)' }}>
+              Roles — {summary.job.name}{' '}
+              <span style={{ fontWeight: 500, color: 'var(--ink-muted)', opacity: 0.8 }}>
+                · {formatDate(summary.job.start_date)} – {formatDate(summary.job.end_date)}
+              </span>
+            </div>
+            <button
+              onClick={() => onOpenInJobs(summary.job.id)}
+              title="Open this job in Jobs"
+              style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', background: '#fff', color: 'var(--ink-muted)', borderRadius: 999, padding: '3px 10px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 11, cursor: 'pointer', flexShrink: 0 }}
+            >
+              <Briefcase size={11} /> Open in Jobs
+            </button>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {summary.requirements.map((r) => (
@@ -5306,6 +5390,47 @@ function ResourceCalendarContent({
     scrollToToday()
   }
 
+  // Testing feedback #51 — same gap as Calendar's own (CC), same fix
+  // shape adapted to Team's pixel-offset scrolling (see scrollToToday's
+  // own comment on why this uses scrollLeft arithmetic instead of
+  // scrollIntoView). Returns whether the jump actually happened — false
+  // means the date isn't loaded yet, so the caller knows to widen the
+  // window and retry once it lands.
+  function scrollToDate(iso: string): boolean {
+    const el = scrollRef.current
+    const idx = dates.findIndex((d) => dateISO(d) === iso)
+    if (!el || idx === -1) return false
+    suppressScrollHandlingRef.current = true
+    el.scrollLeft = idx * colWidth
+    const d = dates[idx]
+    setVisibleMonthLabel(`${MONTH_LABELS[d.getMonth()]} ${d.getFullYear()}`)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      suppressScrollHandlingRef.current = false
+    }))
+    return true
+  }
+
+  const pendingJumpDateRef = useRef<string | null>(null)
+
+  function jumpToDate(iso: string) {
+    if (scrollToDate(iso)) return
+    // Not in the currently-loaded window — expandStart/expandEnd fetch
+    // whatever slice is missing in one request regardless of how far out
+    // the target is (no incremental stepping needed, unlike organic
+    // scroll-edge expansion), padded by one expand-chunk so the target
+    // isn't sitting right at the new edge.
+    pendingJumpDateRef.current = iso
+    const target = parseISODate(iso)
+    if (iso < rangeStart) expandStart(dateISO(addDays(target, -TEAM_EXPAND_DAYS)))
+    if (iso > rangeEnd) expandEnd(dateISO(addDays(target, TEAM_EXPAND_DAYS)))
+  }
+
+  useEffect(() => {
+    const pending = pendingJumpDateRef.current
+    if (!pending) return
+    if (scrollToDate(pending)) pendingJumpDateRef.current = null
+  }, [dates])
+
   function changeMode(newMode: TeamMode) {
     const el = scrollRef.current
     if (el) modeChangeAnchorIndexRef.current = Math.floor(el.scrollLeft / colWidth)
@@ -5395,6 +5520,14 @@ function ResourceCalendarContent({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
         <div style={{ fontFamily: 'var(--font)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{visibleMonthLabel}</div>
+        <input
+          type="date"
+          onChange={(e) => {
+            if (e.target.value) jumpToDate(e.target.value)
+          }}
+          title="Jump to date"
+          style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 10px', fontFamily: 'var(--font)', fontSize: 12.5, color: 'var(--ink)' }}
+        />
         <button onClick={goToday} style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 14px', fontFamily: 'var(--font)', fontWeight: 600, fontSize: 12.5, color: 'var(--ink)', cursor: 'pointer' }}>
           Today
         </button>
@@ -7830,12 +7963,40 @@ export function RaltoDesktopApp() {
     if (location.pathname === '/') navigate(NAV_PATH.today, { replace: true })
   }, [location.pathname, navigate])
 
+  // Testing feedback #52 — Jobs and Planner both fall back to "the first
+  // job in the list" whenever their own URL has no specific id (see each
+  // one's own `?? activeSummaries[0]`), which is exactly what happened on
+  // every plain tab switch: leaving Jobs for Planner and clicking back
+  // into Jobs lands on /jobs with no id, so it silently jumped to the
+  // most recent job instead of the one actually open before. Remembering
+  // the last real id seen for each tab and routing a bare tab click back
+  // through it (below) fixes that without needing to touch either
+  // content component's own selection-fallback logic at all.
+  const [lastJobsId, setLastJobsId] = useState<string | undefined>(undefined)
+  const [lastPlannerId, setLastPlannerId] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (selectedJobId) setLastJobsId(selectedJobId)
+  }, [selectedJobId])
+  useEffect(() => {
+    if (selectedPlannerJobId) setLastPlannerId(selectedPlannerJobId)
+  }, [selectedPlannerJobId])
+
   // Sidebar tabs that don't carry a specific record (Today/Calendar/Team/
   // Archive/Settings, or re-clicking the tab you're already on) navigate
   // straight to NAV_PATH; a no-op click doesn't push a redundant history
-  // entry.
+  // entry. Jobs/Planner restore whichever job was last open there instead,
+  // per the comment above.
   const selectTab = (key: NavKey) => {
-    if (key !== active) navigate(NAV_PATH[key])
+    if (key === active) return
+    if (key === 'jobs' && lastJobsId) {
+      navigate(`${NAV_PATH.jobs}/${lastJobsId}`)
+      return
+    }
+    if (key === 'planner' && lastPlannerId) {
+      navigate(`${NAV_PATH.planner}/${lastPlannerId}`)
+      return
+    }
+    navigate(NAV_PATH[key])
   }
 
   const [plannerTargetReqId, setPlannerTargetReqId] = useState<string | undefined>(undefined)
@@ -7971,6 +8132,7 @@ export function RaltoDesktopApp() {
           prefill={jobPrefill}
           onConsumedPrefill={() => setJobPrefill(undefined)}
           onOpenRoleInPlanner={openRoleInPlanner}
+          onOpenInPlanner={openJobFromCalendar}
         />
       )}
       {active === 'planner' && (
@@ -7979,6 +8141,7 @@ export function RaltoDesktopApp() {
           clients={clients}
           selectedJobId={selectedPlannerJobId}
           onSelectJob={(id) => navigate(`${NAV_PATH.planner}/${id}`)}
+          onOpenInJobs={openJobFromToday}
           reloadSummaries={reloadSummaries}
           targetReqId={plannerTargetReqId}
           onConsumedTarget={() => setPlannerTargetReqId(undefined)}
