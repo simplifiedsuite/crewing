@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -116,6 +118,17 @@ func (a *API) UpdateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	var previousStart, previousEnd string
+	if err := a.DB.QueryRow(r.Context(), `SELECT start_date, end_date FROM jobs WHERE id = $1 AND organisation_id = $2`, id, currentOrgID).
+		Scan(&previousStart, &previousEnd); errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to update job")
+		return
+	}
+
 	var j models.Job
 	err := scanJob(a.DB.QueryRow(r.Context(),
 		`UPDATE jobs SET name = $1, client_id = $2, project_reference = $3, venue_id = $4, project_id = $5,
@@ -133,7 +146,133 @@ func (a *API) UpdateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "failed to update job")
 		return
 	}
+
+	// Bug fix — confirmed live on "FC Sabah v Slavia": the Job's dates
+	// changing never cascaded anywhere, so job_requirements and bookings
+	// kept whatever range they were created with even after the Job
+	// itself no longer ran that long — Team view and the day-assignment
+	// picker (both read bookings.start_date/end_date, not booking_shifts)
+	// kept showing/offering a day the job didn't cover any more.
+	if req.StartDate != previousStart || req.EndDate != previousEnd {
+		a.cascadeJobDateChange(r.Context(), j.ID, j.StartDate, j.EndDate)
+	}
+
 	writeJSON(w, http.StatusOK, j)
+}
+
+// cascadeJobDateChange clamps every job_requirement's and booking's own
+// date range to stay within the Job's new dates after an edit — narrower
+// ranges (a booking covering only part of a longer job, item L) are left
+// alone; only a range that now extends outside the Job's dates gets
+// pulled in. A clamped booking's booking_shifts are resynced to its full
+// new range, matching UpdateBooking's own established precedent that a
+// real date-range change resyncs shifts to the full new range rather
+// than trying to preserve a narrower prior selection.
+func (a *API) cascadeJobDateChange(ctx context.Context, jobID, newStart, newEnd string) {
+	rows, err := a.DB.Query(ctx,
+		`SELECT id, start_date, end_date FROM job_requirements WHERE job_id = $1 AND organisation_id = $2`,
+		jobID, currentOrgID,
+	)
+	if err != nil {
+		log.Printf("cascade job date change: listing requirements: %v", err)
+		return
+	}
+	type idRange struct{ id, start, end string }
+	var reqs []idRange
+	for rows.Next() {
+		var rr idRange
+		if err := rows.Scan(&rr.id, &rr.start, &rr.end); err != nil {
+			rows.Close()
+			log.Printf("cascade job date change: scanning requirement: %v", err)
+			return
+		}
+		reqs = append(reqs, rr)
+	}
+	rows.Close()
+
+	for _, rr := range reqs {
+		clampedStart, clampedEnd := clampDateRange(rr.start, rr.end, newStart, newEnd)
+		if clampedStart != rr.start || clampedEnd != rr.end {
+			if _, err := a.DB.Exec(ctx,
+				`UPDATE job_requirements SET start_date = $1, end_date = $2 WHERE id = $3 AND organisation_id = $4`,
+				clampedStart, clampedEnd, rr.id, currentOrgID,
+			); err != nil {
+				log.Printf("cascade job date change: updating requirement %s: %v", rr.id, err)
+			}
+		}
+
+		bookingRows, err := a.DB.Query(ctx,
+			`SELECT id, start_date, end_date, call_time FROM bookings WHERE job_requirement_id = $1 AND organisation_id = $2`,
+			rr.id, currentOrgID,
+		)
+		if err != nil {
+			log.Printf("cascade job date change: listing bookings for requirement %s: %v", rr.id, err)
+			continue
+		}
+		type bookingRange struct {
+			id, start, end string
+			callTime       *string
+		}
+		var bks []bookingRange
+		for bookingRows.Next() {
+			var br bookingRange
+			if err := bookingRows.Scan(&br.id, &br.start, &br.end, &br.callTime); err != nil {
+				log.Printf("cascade job date change: scanning booking: %v", err)
+				continue
+			}
+			bks = append(bks, br)
+		}
+		bookingRows.Close()
+
+		for _, br := range bks {
+			clampedBStart, clampedBEnd := clampDateRange(br.start, br.end, newStart, newEnd)
+			if clampedBStart == br.start && clampedBEnd == br.end {
+				continue
+			}
+			if _, err := a.DB.Exec(ctx,
+				`UPDATE bookings SET start_date = $1, end_date = $2 WHERE id = $3 AND organisation_id = $4`,
+				clampedBStart, clampedBEnd, br.id, currentOrgID,
+			); err != nil {
+				log.Printf("cascade job date change: updating booking %s: %v", br.id, err)
+				continue
+			}
+			shiftDays, err := expandDateRange(clampedBStart, clampedBEnd)
+			if err != nil {
+				log.Printf("cascade job date change: expanding shift days for booking %s: %v", br.id, err)
+				continue
+			}
+			if err := a.syncBookingShifts(ctx, br.id, shiftDays, br.callTime); err != nil {
+				log.Printf("cascade job date change: syncing booking shifts for booking %s: %v", br.id, err)
+			}
+		}
+	}
+}
+
+// clampDateRange intersects [start, end] with [boundStart, boundEnd] —
+// plain "YYYY-MM-DD" strings compare correctly with Go's native <, same
+// convention already used elsewhere in this codebase. Falls back to
+// [boundStart, boundEnd] entirely if the two ranges no longer overlap at
+// all (e.g. the Job moved to a disjoint date range) rather than producing
+// an inverted start > end range.
+func clampDateRange(start, end, boundStart, boundEnd string) (string, string) {
+	// Entirely disjoint from the Job's new range (the whole Job got moved
+	// to different dates, not just shortened/lengthened) — nothing
+	// meaningful to preserve, snap fully to the Job's own new range.
+	if end < boundStart || start > boundEnd {
+		return boundStart, boundEnd
+	}
+	newEnd := end
+	if newEnd > boundEnd {
+		newEnd = boundEnd
+	}
+	// Deliberately NOT pulling start up to boundStart just because the
+	// ranges still overlap — a booking legitimately starting a day or two
+	// before the Job's own start (a rig/prep day) is a real, existing
+	// pattern confirmed in production (a handful of live bookings do
+	// this). Only the provably-invalid disjoint case above gets start
+	// touched; an overlapping range only ever gets its end trimmed in,
+	// matching the confirmed real bug (a Job shortened at the end).
+	return start, newEnd
 }
 
 var validJobStatuses = map[models.JobStatus]bool{
