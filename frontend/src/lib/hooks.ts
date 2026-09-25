@@ -148,6 +148,12 @@ export function unassignVehicleFromJob(jobId: string, coreVehicleId: string) {
   return api.delete(`/jobs/${jobId}/vehicles/${coreVehicleId}`)
 }
 
+// setVehicleDriver — testing feedback #47. personId undefined clears the
+// driver.
+export function setVehicleDriver(jobId: string, coreVehicleId: string, personId: string | undefined) {
+  return api.put(`/jobs/${jobId}/vehicles/${coreVehicleId}/driver`, { person_id: personId ?? null })
+}
+
 // useJobDayLabels — testing feedback R: what each day within a Job means
 // (e.g. "Rig", "Match day"), keyed by date so callers can look one up with
 // a plain object index rather than scanning the array each time.
@@ -230,6 +236,7 @@ export interface CreateJobInput {
   end_date: string
   status: JobStatus
   commitment: JobCommitment
+  kick_off_time?: string
   notes?: string
 }
 

@@ -127,6 +127,11 @@ type Job struct {
 	EndDate     string        `json:"end_date"`
 	Status      JobStatus     `json:"status"`
 	Commitment  JobCommitment `json:"commitment"`
+	// KickOffTime — testing feedback #45. The Job-level kick-off/on-air
+	// moment itself (the match kicking off, the broadcast going live),
+	// distinct from any individual booking's own call_time (which is
+	// per-person, when THEY need to arrive — see bookings.call_time).
+	KickOffTime *string       `json:"kick_off_time,omitempty"`
 	ColorHex    *string       `json:"color_hex,omitempty"`
 	Notes       *string       `json:"notes,omitempty"`
 	CreatedBy   *string       `json:"created_by,omitempty"`
@@ -230,6 +235,12 @@ type JobVehicle struct {
 	CoreVehicleID string `json:"core_vehicle_id"`
 	Name          string `json:"name"`
 	Registration  string `json:"registration"`
+	// DriverPersonID/DriverName — testing feedback #47. Unlike
+	// CoreVehicleID, `people` is Ralto's own local table, so this is a
+	// real FK (job_core_vehicles.driver_person_id) joined at read time,
+	// not a cached label.
+	DriverPersonID *string `json:"driver_person_id,omitempty"`
+	DriverName     *string `json:"driver_name,omitempty"`
 }
 
 // --- JobRequirement ---
@@ -628,6 +639,11 @@ const (
 	AlertTypeUnacknowledgedUpdate AlertType = "unacknowledged_update"
 	AlertTypeNoShow               AlertType = "no_show"
 	AlertTypeAutoSuggestedBooking AlertType = "auto_suggested_booking"
+	// AlertTypeFreelancerAccepted — testing feedback #63. Raised at both
+	// self-service accept paths (crew app, public email-token link), not
+	// the scheduler-manual phone-response record (the scheduler doing
+	// that already knows).
+	AlertTypeFreelancerAccepted AlertType = "freelancer_accepted"
 )
 
 type AlertStatus string

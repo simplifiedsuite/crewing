@@ -70,7 +70,7 @@ func (a *API) issueStaffPasswordResetToken(ctx context.Context, userID string) e
 
 	resetURL := staffCTAURL("/reset-password?token=" + token)
 	subject, body := notify.RenderPasswordReset(resetURL)
-	return a.Notify.SendEmail(email, name, subject, body)
+	return a.Notify.SendEmail(email, name, subject, body, nil)
 }
 
 func (a *API) ConfirmStaffPasswordReset(w http.ResponseWriter, r *http.Request) {

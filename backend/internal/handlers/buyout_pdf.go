@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-pdf/fpdf"
 	"github.com/jackc/pgx/v5"
 
@@ -84,7 +86,7 @@ func resolveBuyoutRate(rateOverride, personRoleRate, standardRate *float64) floa
 func (a *API) buildBuyoutView(ctx context.Context, bookingID string) (*buyoutView, error) {
 	var personID, jobID, roleID, confirmedBy *string
 	var personFirstName, personLastName, roleName, jobName string
-	var personCompanyName, jobProjectReference, bookingNotes *string
+	var personCompanyName, jobProjectReference, jobOrderNumber, bookingNotes *string
 	var startDate, endDate string
 
 	// Single joined read for everything that comes straight off
@@ -95,7 +97,7 @@ func (a *API) buildBuyoutView(ctx context.Context, bookingID string) (*buyoutVie
 	err := a.DB.QueryRow(ctx, `
 		SELECT b.person_id, jr.job_id, jr.role_id, b.confirmed_by,
 		       p.first_name, p.last_name, p.company_name, p.standard_rate, p.rate_currency,
-		       ro.name, j.name, j.project_reference,
+		       ro.name, j.name, j.project_reference, j.order_number,
 		       b.start_date, b.end_date, b.rate_override, b.notes
 		FROM bookings b
 		JOIN job_requirements jr ON jr.id = b.job_requirement_id
@@ -106,7 +108,7 @@ func (a *API) buildBuyoutView(ctx context.Context, bookingID string) (*buyoutVie
 		bookingID,
 	).Scan(&personID, &jobID, &roleID, &confirmedBy,
 		&personFirstName, &personLastName, &personCompanyName, &personStandardRateF, &rateCurrencyStr,
-		&roleName, &jobName, &jobProjectReference,
+		&roleName, &jobName, &jobProjectReference, &jobOrderNumber,
 		&startDate, &endDate, &rateOverrideF, &bookingNotes)
 	if err != nil {
 		return nil, fmt.Errorf("loading booking for buyout: %w", err)
@@ -152,15 +154,26 @@ func (a *API) buildBuyoutView(ctx context.Context, bookingID string) (*buyoutVie
 		companyName = *personCompanyName
 	}
 
+	// Testing feedback #59 — the Job's real reference number (Program
+	// Ref / Monday order_number, from the Fetch-from-Monday work) never
+	// made it onto the buyout, which was only ever reading
+	// project_reference — a separate, older, manually-typed "their PO/
+	// job number" field that's usually empty for a Job actually fetched
+	// from Monday. Prefer order_number (the same field the Job detail
+	// panel's own "Program Ref" row shows) when set, falling back to
+	// project_reference for a hand-created Job that has one instead.
 	buyoutRef := ""
-	if jobProjectReference != nil {
+	switch {
+	case jobOrderNumber != nil && strings.TrimSpace(*jobOrderNumber) != "":
+		buyoutRef = *jobOrderNumber
+	case jobProjectReference != nil && strings.TrimSpace(*jobProjectReference) != "":
 		buyoutRef = *jobProjectReference
-	} else {
-		// Missing Job.project_reference degrades gracefully (blank field,
-		// not a blocked confirmation) per the prompt's own instruction —
-		// logged so it's visible that this job is missing one, same
-		// treatment as a missing org_buyout_settings row below.
-		log.Printf("buyout pdf: booking %s's job %s has no project_reference — buyout reference left blank", bookingID, *jobID)
+	default:
+		// Missing both degrades gracefully (blank field, not a blocked
+		// confirmation) per the prompt's own instruction — logged so
+		// it's visible that this job is missing one, same treatment as a
+		// missing org_buyout_settings row below.
+		log.Printf("buyout pdf: booking %s's job %s has no order_number or project_reference — buyout reference left blank", bookingID, *jobID)
 	}
 
 	notes := ""
@@ -529,4 +542,82 @@ func (a *API) buyoutAttachment(ctx context.Context, bookingID string) *notify.At
 		Content:  pdfBytes,
 		Type:     "application/pdf",
 	}
+}
+
+// GetBuyoutPreview — testing feedback #61. Lets a scheduler see the actual
+// buyout before it's sent: same buildBuyoutView + renderBuyoutPDF a real
+// send uses (not a separate mock-up that could drift from the real
+// thing), just returned directly instead of emailed. Deliberately not
+// gated on booking status — the whole point is previewing before
+// Confirm — so AuthorisedBy will read blank until the booking is
+// actually confirmed, same as the real PDF would at that point. Never
+// persisted: only an actual send (ConfirmBooking) writes a buyout_records
+// row, per that field's own "record of what was really sent" purpose.
+func (a *API) GetBuyoutPreview(w http.ResponseWriter, r *http.Request) {
+	bookingID := chi.URLParam(r, "id")
+	view, err := a.buildBuyoutView(r.Context(), bookingID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+	pdfBytes := renderBuyoutPDF(view)
+	if len(pdfBytes) == 0 {
+		writeError(w, http.StatusInternalServerError, "failed to render buyout preview")
+		return
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `inline; filename="buyout-preview.pdf"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfBytes)
+}
+
+// persistBuyoutRecord — testing feedback #62. Called right alongside
+// buyoutAttachment at the one real send site (ConfirmBooking), not
+// inside buyoutAttachment itself: that function's own contract is "build
+// the email attachment," and persisting a permanent record is a distinct
+// concern with its own failure mode (logged, never blocks the send that
+// already succeeded by the time this runs — same graceful-degradation
+// principle as everything else in this file).
+func (a *API) persistBuyoutRecord(ctx context.Context, bookingID string, pdfBytes []byte) {
+	var jobID, personID string
+	if err := a.DB.QueryRow(ctx,
+		`SELECT jr.job_id, b.person_id FROM bookings b JOIN job_requirements jr ON jr.id = b.job_requirement_id WHERE b.id = $1`,
+		bookingID,
+	).Scan(&jobID, &personID); err != nil {
+		log.Printf("buyout record: looking up job/person for booking %s: %v", bookingID, err)
+		return
+	}
+	if _, err := a.DB.Exec(ctx,
+		`INSERT INTO buyout_records (booking_id, job_id, person_id, pdf_content, organisation_id) VALUES ($1, $2, $3, $4, $5)`,
+		bookingID, jobID, personID, pdfBytes, currentOrgID,
+	); err != nil {
+		log.Printf("buyout record: saving record for booking %s: %v", bookingID, err)
+	}
+}
+
+// GetBuyoutRecord — testing feedback #62's retrieval half. Most recent
+// persisted record for this booking (a booking is only ever confirmed
+// once in the normal flow, but re-confirming — see ConfirmBooking's own
+// idempotent-re-confirm branch — wouldn't re-send or re-persist, so
+// "most recent" is really just "the only one" in practice).
+func (a *API) GetBuyoutRecord(w http.ResponseWriter, r *http.Request) {
+	bookingID := chi.URLParam(r, "id")
+	var pdfContent []byte
+	var generatedAt time.Time
+	err := a.DB.QueryRow(r.Context(),
+		`SELECT pdf_content, generated_at FROM buyout_records WHERE booking_id = $1 AND organisation_id = $2 ORDER BY generated_at DESC LIMIT 1`,
+		bookingID, currentOrgID,
+	).Scan(&pdfContent, &generatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "no buyout has been sent for this booking")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load buyout record")
+		return
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `inline; filename="buyout.pdf"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfContent)
 }

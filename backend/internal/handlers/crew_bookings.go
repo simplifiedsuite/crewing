@@ -240,6 +240,14 @@ func (a *API) RespondToOffer(w http.ResponseWriter, r *http.Request) {
 			subject, body := notify.RenderBookingPencilled(ctx.RoleName, ctx.JobName, ctx.DatesText, ctx.Venue, callTimeText, crewCTAURL("/bookings/"+b.ID))
 			_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingPencilled,
 				map[string]string{"role": ctx.RoleName, "job_name": ctx.JobName, "dates": ctx.DatesText}, subject, body)
+			// Testing feedback #63 — let the scheduler know without having
+			// to keep re-checking the Job themselves.
+			if _, err := a.DB.Exec(r.Context(),
+				`INSERT INTO operational_alerts (job_id, type, related_entity_id, status, organisation_id) VALUES ($1, 'freelancer_accepted', $2, 'open', $3)`,
+				ctx.JobID, b.ID, currentOrgID,
+			); err != nil {
+				log.Printf("respond to offer: raising freelancer_accepted alert: %v", err)
+			}
 		}
 	}
 

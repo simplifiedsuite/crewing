@@ -68,8 +68,29 @@ func (a *API) notifyPerson(ctx context.Context, personID string, notifType model
 		return nil
 	}
 
+	// Testing feedback #62 — org_buyout_settings.accounts_email/
+	// operations_email already existed but were only ever substituted
+	// into the buyout PDF/email body as plain text, never actually CC'd
+	// on the send itself. A buyout is only ever attached here for
+	// booking_confirmed (see this function's own comment on attachments,
+	// and buyoutAttachment's only call site) — that's the one case CC
+	// makes sense for; every other trigger point keeps sending exactly
+	// as before (cc stays nil).
+	var cc []string
+	if notifType == models.NotificationTypeBookingConfirmed && len(attachments) > 0 {
+		if settings, err := a.getOrgBuyoutSettings(ctx); err == nil && settings != nil {
+			ccSet := map[string]bool{}
+			for _, addr := range []*string{settings.AccountsEmail, settings.OperationsEmail} {
+				if addr != nil && *addr != "" && !ccSet[*addr] {
+					ccSet[*addr] = true
+					cc = append(cc, *addr)
+				}
+			}
+		}
+	}
+
 	status := "sent"
-	sendErr := a.Notify.SendEmail(*email, firstName, emailSubject, emailBody, attachments...)
+	sendErr := a.Notify.SendEmail(*email, firstName, emailSubject, emailBody, cc, attachments...)
 	if sendErr != nil {
 		status = "failed"
 	}

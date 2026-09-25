@@ -201,6 +201,8 @@ export interface JobVehicle {
   core_vehicle_id: string
   name: string
   registration: string
+  driver_person_id?: string
+  driver_name?: string
 }
 
 export type SkillType = 'skill' | 'certification' | 'visa' | 'credential'
@@ -258,6 +260,10 @@ export interface Job {
   end_date: string
   status: JobStatus
   commitment: JobCommitment
+  // kick_off_time — the Job-level kick-off/on-air moment (the match
+  // kicking off, the broadcast going live), distinct from any individual
+  // booking's own call_time (per-person, when they need to arrive).
+  kick_off_time?: string
   color_hex?: string
   notes?: string
   created_by?: string
@@ -422,6 +428,7 @@ export type AlertType =
   | 'unacknowledged_update'
   | 'no_show'
   | 'auto_suggested_booking'
+  | 'freelancer_accepted'
 
 export interface OperationalAlert {
   id: string

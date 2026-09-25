@@ -68,6 +68,7 @@ type sendGridAttachment struct {
 
 type sendGridPersonalization struct {
 	To []sendGridAddress `json:"to"`
+	Cc []sendGridAddress `json:"cc,omitempty"`
 }
 
 type sendGridAddress struct {
@@ -80,14 +81,21 @@ type sendGridContent struct {
 	Value string `json:"value"`
 }
 
-// SendEmail sends a single HTML email, optionally with one or more
-// attachments (variadic so every existing call site — none of which
-// attach anything — is unaffected). Errors are returned, not swallowed —
-// callers decide whether a failed send should also mark the
-// NotificationDelivery row as failed (it should).
-func (c *Client) SendEmail(toEmail, toName, subject, htmlBody string, attachments ...Attachment) error {
+// SendEmail sends a single HTML email, optionally CC'd (empty/nil for the
+// large majority of call sites that never CC anyone — see notifyPerson's
+// own comment on when it actually populates this, e.g. a buyout going out
+// to accounts/operations), with one or more attachments (variadic so every
+// existing call site — none of which attach anything — is unaffected).
+// Errors are returned, not swallowed — callers decide whether a failed
+// send should also mark the NotificationDelivery row as failed (it
+// should).
+func (c *Client) SendEmail(toEmail, toName, subject, htmlBody string, cc []string, attachments ...Attachment) error {
+	personalization := sendGridPersonalization{To: []sendGridAddress{{Email: toEmail, Name: toName}}}
+	for _, addr := range cc {
+		personalization.Cc = append(personalization.Cc, sendGridAddress{Email: addr})
+	}
 	payload := sendGridPayload{
-		Personalizations: []sendGridPersonalization{{To: []sendGridAddress{{Email: toEmail, Name: toName}}}},
+		Personalizations: []sendGridPersonalization{personalization},
 		From:             sendGridAddress{Email: c.fromEmail, Name: c.fromName},
 		Subject:          subject,
 		Content:          []sendGridContent{{Type: "text/html", Value: htmlBody}},

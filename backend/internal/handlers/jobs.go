@@ -13,12 +13,12 @@ import (
 )
 
 const jobSelectColumns = `id, name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, order_number,
-	        start_date, end_date, status, commitment, color_hex, notes, created_by, created_at, updated_at,
+	        start_date, end_date, status, commitment, kick_off_time, color_hex, notes, created_by, created_at, updated_at,
 	        deleted_at, deleted_by, (SELECT u.name FROM users u WHERE u.id = deleted_by) AS deleted_by_name`
 
 func scanJob(row pgx.Row, j *models.Job) error {
 	return row.Scan(&j.ID, &j.Name, &j.ClientID, &j.ProjectReference, &j.VenueID, &j.ProjectID, &j.SharedContractID, &j.SharedContractName, &j.SharedJobID, &j.OrderNumber,
-		&j.StartDate, &j.EndDate, &j.Status, &j.Commitment, &j.ColorHex, &j.Notes, &j.CreatedBy, &j.CreatedAt, &j.UpdatedAt,
+		&j.StartDate, &j.EndDate, &j.Status, &j.Commitment, &j.KickOffTime, &j.ColorHex, &j.Notes, &j.CreatedBy, &j.CreatedAt, &j.UpdatedAt,
 		&j.DeletedAt, &j.DeletedBy, &j.DeletedByName)
 }
 
@@ -76,6 +76,7 @@ type jobWriteRequest struct {
 	EndDate            string               `json:"end_date"`
 	Status             models.JobStatus     `json:"status"`
 	Commitment         models.JobCommitment `json:"commitment"`
+	KickOffTime        *string              `json:"kick_off_time"`
 	ColorHex           *string              `json:"color_hex"`
 	Notes              *string              `json:"notes"`
 }
@@ -99,10 +100,10 @@ func (a *API) CreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	var j models.Job
 	err := scanJob(a.DB.QueryRow(r.Context(),
-		`INSERT INTO jobs (name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, order_number, start_date, end_date, status, commitment, color_hex, notes, created_by, organisation_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		`INSERT INTO jobs (name, client_id, project_reference, venue_id, project_id, shared_contract_id, shared_contract_name, shared_job_id, order_number, start_date, end_date, status, commitment, kick_off_time, color_hex, notes, created_by, organisation_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		 RETURNING `+jobSelectColumns,
-		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.OrderNumber, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, staff, currentOrgID,
+		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.OrderNumber, req.StartDate, req.EndDate, req.Status, req.Commitment, req.KickOffTime, req.ColorHex, req.Notes, staff, currentOrgID,
 	), &j)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to create job")
@@ -133,10 +134,10 @@ func (a *API) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	err := scanJob(a.DB.QueryRow(r.Context(),
 		`UPDATE jobs SET name = $1, client_id = $2, project_reference = $3, venue_id = $4, project_id = $5,
 		        shared_contract_id = $6, shared_contract_name = $7, shared_job_id = $8, order_number = $9,
-		        start_date = $10, end_date = $11, status = $12, commitment = $13, color_hex = $14, notes = $15, updated_at = now()
-		 WHERE id = $16 AND organisation_id = $17
+		        start_date = $10, end_date = $11, status = $12, commitment = $13, kick_off_time = $14, color_hex = $15, notes = $16, updated_at = now()
+		 WHERE id = $17 AND organisation_id = $18
 		 RETURNING `+jobSelectColumns,
-		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.OrderNumber, req.StartDate, req.EndDate, req.Status, req.Commitment, req.ColorHex, req.Notes, id, currentOrgID,
+		req.Name, req.ClientID, req.ProjectReference, req.VenueID, req.ProjectID, req.SharedContractID, req.SharedContractName, req.SharedJobID, req.OrderNumber, req.StartDate, req.EndDate, req.Status, req.Commitment, req.KickOffTime, req.ColorHex, req.Notes, id, currentOrgID,
 	), &j)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "job not found")

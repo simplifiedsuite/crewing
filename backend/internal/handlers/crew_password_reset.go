@@ -103,7 +103,7 @@ func (a *API) issuePasswordResetToken(ctx context.Context, personID string) erro
 
 	resetURL := crewCTAURL("/reset-password?token=" + token)
 	subject, body := notify.RenderPasswordReset(resetURL)
-	return a.Notify.SendEmail(*email, firstName, subject, body)
+	return a.Notify.SendEmail(*email, firstName, subject, body, nil)
 }
 
 func hashResetToken(token string) string {

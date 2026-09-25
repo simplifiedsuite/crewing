@@ -587,6 +587,9 @@ func (a *API) ConfirmBooking(w http.ResponseWriter, r *http.Request) {
 		if employmentType == models.EmploymentTypeFreelancer {
 			if att := a.buyoutAttachment(r.Context(), b.ID); att != nil {
 				attachments = append(attachments, *att)
+				// Testing feedback #62 — persist a retrievable copy of what's
+				// actually being sent, not just a bare send-status log.
+				a.persistBuyoutRecord(r.Context(), b.ID, att.Content)
 			}
 		}
 		_ = a.notifyPerson(r.Context(), ctx.PersonID, models.NotificationTypeBookingConfirmed,

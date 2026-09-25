@@ -104,6 +104,7 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Get("/{id}/vehicles", api.ListJobVehicles)
 			r.Post("/{id}/vehicles", api.AssignVehicleToJob)
 			r.Delete("/{id}/vehicles/{vehicleId}", api.UnassignVehicleFromJob)
+			r.Put("/{id}/vehicles/{vehicleId}/driver", api.SetVehicleDriver)
 			r.Get("/{id}/day-labels", api.ListJobDayLabels)
 			r.Put("/{id}/day-labels/{date}", api.SetJobDayLabel)
 		})
@@ -171,6 +172,8 @@ func registerStaffRoutes(r chi.Router, api *handlers.API) {
 			r.Get("/{id}/shifts", api.ListBookingShifts)
 			r.Post("/{id}/shifts", api.AddBookingShift)
 			r.Delete("/{id}/shifts/{shiftId}", api.RemoveBookingShift)
+			r.Get("/{id}/buyout-preview", api.GetBuyoutPreview)
+			r.Get("/{id}/buyout-record", api.GetBuyoutRecord)
 		})
 
 		r.Route("/timesheets", func(r chi.Router) {

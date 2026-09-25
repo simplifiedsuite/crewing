@@ -36,6 +36,7 @@ import {
   Copy,
   Archive as ArchiveIcon,
   CalendarCheck2,
+  FileText,
 } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
 import { formatDate } from '../../lib/format'
@@ -122,6 +123,7 @@ import {
   listJobVehicles,
   assignVehicleToJob,
   unassignVehicleFromJob,
+  setVehicleDriver,
   type JobSummary,
   type PersonWriteInput,
   type MondayProjectLookup,
@@ -369,6 +371,9 @@ const ALERT_COPY: Record<OperationalAlert['type'], { title: string; icon: typeof
   unacknowledged_update: { title: 'Call-time change unacknowledged', icon: RefreshCw, tone: 'attention', actionLabel: 'Mark acknowledged' },
   no_show: { title: 'No-show reported', icon: AlertTriangle, tone: 'danger', actionLabel: 'Review' },
   auto_suggested_booking: { title: 'Auto-suggested booking to review', icon: Bell, tone: 'attention', actionLabel: 'Review' },
+  // Testing feedback #63 — previously a scheduler had to keep re-checking
+  // a Job to see if a freelancer had responded to an offer.
+  freelancer_accepted: { title: 'Freelancer accepted — now pencilled', icon: CheckCircle2, tone: 'attention', actionLabel: 'Mark reviewed' },
 }
 
 const toneColor = {
@@ -1686,6 +1691,19 @@ function BookingDaysBadge({
     }
   }
 
+  // Testing feedback #28 — which specific days a partial booking covers
+  // used to only be visible via this button's own title tooltip (or by
+  // opening the editor below). Sorted covered dates, capped so a wide job
+  // with many narrowed days doesn't turn this into a wall of dates — the
+  // tooltip still carries the full "N of M days" summary regardless.
+  // Plain arithmetic, not useMemo — `covered` is already a handful of
+  // date strings at most, not worth memoizing, and this runs after an
+  // early return below so a hook here would break React's rules anyway.
+  const DATE_LIST_CAP = 3
+  const sortedCovered = [...covered].sort()
+  const shownDates = sortedCovered.slice(0, DATE_LIST_CAP).map(formatDate).join(', ')
+  const hiddenCount = sortedCovered.length - DATE_LIST_CAP
+
   if (!editing) {
     return (
       <button
@@ -1695,7 +1713,14 @@ function BookingDaysBadge({
         style={{ display: 'flex', alignItems: 'center', gap: 3, border: 'none', background: 'none', cursor: 'pointer', padding: 0, fontFamily: 'var(--font)', fontSize: 11, fontWeight: 600, color: isPartial ? 'var(--attention)' : 'var(--ink-muted)' }}
       >
         <CalendarCheck2 size={11} />
-        {isPartial ? `${covered.length}/${fullDays.length} days` : 'All days'}
+        {isPartial ? (
+          <>
+            {covered.length}/{fullDays.length} days ({shownDates}
+            {hiddenCount > 0 ? `, +${hiddenCount} more` : ''})
+          </>
+        ) : (
+          'All days'
+        )}
       </button>
     )
   }
@@ -2058,6 +2083,37 @@ function BookedPersonRow({
         <BookingCallTimeEditor booking={booking} onUpdated={onDaysUpdated} />
         <BookingDateRangeEditor booking={booking} onUpdated={onDaysUpdated} />
         <BookingDaysBadge booking={booking} onUpdated={onDaysUpdated} dayLabels={dayLabels} />
+        {/* Testing feedback #61/#62 — buyout is freelancer-only throughout
+            (Addendum v3 §5), so these only ever show for a freelancer
+            booking. Before Confirm, preview what would be sent (built
+            fresh, never persisted); once Confirmed, view the actual
+            persisted record of what really was sent instead — the two
+            deliberately point at different endpoints, not the same one
+            with a status check, since a confirmed booking's real sent
+            copy shouldn't silently drift from a freshly-rendered preview
+            if e.g. the person's rate changes afterward. */}
+        {isFreelancer && booking.status !== 'confirmed' && (
+          <a
+            href={`/api/bookings/${booking.id}/buyout-preview`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Preview buyout"
+            style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 2, color: 'var(--ink-muted)', display: 'flex' }}
+          >
+            <FileText size={13} />
+          </a>
+        )}
+        {isFreelancer && booking.status === 'confirmed' && (
+          <a
+            href={`/api/bookings/${booking.id}/buyout-record`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="View sent buyout"
+            style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 2, color: 'var(--ink-muted)', display: 'flex' }}
+          >
+            <FileText size={13} />
+          </a>
+        )}
         {canRecordResponse && (
           <>
             <button
@@ -2675,6 +2731,9 @@ function JobCreateForm({
   const [projectReference, setProjectReference] = useState(editingJob?.project_reference ?? '')
   const [startDate, setStartDate] = useState(editingJob?.start_date ?? prefill?.start_date ?? todayISO())
   const [endDate, setEndDate] = useState(editingJob?.end_date ?? prefill?.end_date ?? prefill?.start_date ?? todayISO())
+  // kickOffTime — testing feedback #45. Job-level, distinct from any
+  // individual booking's own call_time.
+  const [kickOffTime, setKickOffTime] = useState(editingJob?.kick_off_time?.slice(0, 5) ?? '')
   // Converting a ProspectiveEvent defaults to Pencil — addendum v2 §4's
   // one exception to Job.commitment's usual Firm default.
   const [commitment, setCommitment] = useState<JobCommitment>(editingJob?.commitment ?? (prefill?.fromProspectiveEventId ? 'pencil' : 'firm'))
@@ -3083,6 +3142,7 @@ function JobCreateForm({
         end_date: endDate,
         status: editingJob?.status ?? ('draft' as const),
         commitment,
+        kick_off_time: kickOffTime || undefined,
         notes: notes || undefined,
       }
 
@@ -3307,10 +3367,16 @@ function JobCreateForm({
           </label>
         </div>
 
-        <label style={labelStyle}>
-          Reference (optional)
-          <input value={projectReference} onChange={(e) => setProjectReference(e.target.value)} placeholder="e.g. their PO / job number" style={inputStyle} />
-        </label>
+        <div style={{ display: 'flex', gap: 14 }}>
+          <label style={{ ...labelStyle, flex: 1 }}>
+            Kick-off / on-air time (optional)
+            <input type="time" value={kickOffTime} onChange={(e) => setKickOffTime(e.target.value)} style={inputStyle} />
+          </label>
+          <label style={{ ...labelStyle, flex: 2 }}>
+            Reference (optional)
+            <input value={projectReference} onChange={(e) => setProjectReference(e.target.value)} placeholder="e.g. their PO / job number" style={inputStyle} />
+          </label>
+        </div>
 
         {coreClientIdForContracts && (
           <ContractPicker
@@ -3645,6 +3711,10 @@ function JobVehiclesSection({ jobId }: { jobId: string }) {
   const [adding, setAdding] = useState(false)
   const [pickId, setPickId] = useState('')
   const [busy, setBusy] = useState(false)
+  // Testing feedback #47 — driver picker. Fetched locally (not threaded
+  // down from the root) since this section already fetches its own
+  // vehicles/coreVehicles rather than receiving them as props.
+  const { data: people } = usePeople()
 
   const reload = useCallback(() => {
     setLoading(true)
@@ -3692,6 +3762,16 @@ function JobVehiclesSection({ jobId }: { jobId: string }) {
     }
   }
 
+  async function changeDriver(coreVehicleId: string, personId: string) {
+    setBusy(true)
+    try {
+      await setVehicleDriver(jobId, coreVehicleId, personId || undefined)
+      reload()
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (loading) return null
   // No assigned vehicles and nothing being added: stay fully out of the
   // way rather than showing an empty-state block for the common case of a
@@ -3724,6 +3804,23 @@ function JobVehiclesSection({ jobId }: { jobId: string }) {
         {assigned.map((v) => (
           <span key={v.core_vehicle_id} style={{ display: 'flex', alignItems: 'center', gap: 5, border: '1px solid var(--line)', borderRadius: 999, padding: '4px 6px 4px 10px', fontFamily: 'var(--font)', fontSize: 12, color: 'var(--ink)' }}>
             {v.name} · {v.registration}
+            {/* Testing feedback #47 — driver picker, inline in the same
+                chip rather than a separate section, matching this whole
+                area's own "small/unobtrusive" design intent. */}
+            <select
+              value={v.driver_person_id ?? ''}
+              onChange={(e) => changeDriver(v.core_vehicle_id, e.target.value)}
+              disabled={busy}
+              title="Driver"
+              style={{ border: 'none', background: 'var(--surface)', borderRadius: 999, padding: '2px 6px', fontFamily: 'var(--font)', fontSize: 11.5, color: v.driver_name ? 'var(--ink)' : 'var(--ink-muted)', cursor: 'pointer', maxWidth: 110 }}
+            >
+              <option value="">No driver</option>
+              {people.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.first_name} {p.last_name}
+                </option>
+              ))}
+            </select>
             <button onClick={() => unassign(v.core_vehicle_id)} disabled={busy} title="Unassign" style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--ink-muted)', padding: 2, display: 'flex' }}>
               <X size={11} />
             </button>
@@ -4215,6 +4312,9 @@ function JobsContent({
 
             <div style={{ display: 'flex', gap: 32, marginTop: 8, borderBottom: '1px solid var(--line)', paddingBottom: 4 }}>
               <InfoRow icon={CalendarDays} label="Dates" value={`${formatDate(selected.job.start_date)} – ${formatDate(selected.job.end_date)}`} />
+              {/* Testing feedback #45 — the Job-level kick-off/on-air time,
+                  distinct from any individual booking's own call time. */}
+              {selected.job.kick_off_time && <InfoRow icon={Clock} label="Kick-off" value={formatTime(selected.job.kick_off_time) ?? ''} />}
               <InfoRow icon={MapPin} label="Venue" value={<VenueValue venue={venue} />} />
               <InfoRow icon={Phone} label="Production contact" value={primaryContact ? `${primaryContact.name}${primaryContact.phone ? ' · ' + primaryContact.phone : ''}` : 'Not yet assigned'} />
               {/* Only shown for Jobs actually linked to a shared Core Job (i.e.
@@ -4271,7 +4371,17 @@ function JobsContent({
             />
           ))}
           {selected.requirements.length === 0 && <div style={{ fontFamily: 'var(--font)', fontSize: 13, color: 'var(--ink-muted)', gridColumn: '1 / -1' }}>No role requirements added yet.</div>}
+          {/* Testing feedback #64 — key forces a remount whenever the
+              selected Job changes. Without it, this is the same component
+              instance across every Job selection (no key = reused by
+              position), and startDate/endDate's own useState(jobStartDate)
+              only ever runs its initializer on the very first mount — every
+              later Job selection kept silently defaulting a new role's
+              dates to whichever Job was selected first this session, not
+              the one actually open. Same fix shape as JobCreateForm's own
+              key={selected.job.id} below, for the identical reason. */}
           <AddRoleRequirementRow
+            key={selected.job.id}
             jobId={selected.job.id}
             jobStartDate={selected.job.start_date}
             jobEndDate={selected.job.end_date}
@@ -5920,15 +6030,21 @@ function ArchiveContent({ summaries, clients, people, reloadSummaries }: { summa
       </label>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 640 }}>
-        {/* Bug fix — this block was gated on !personFilter, which meant
-            picking a crew member made the entire deleted-jobs list vanish,
-            directly contradicting this comment's own stated intent (and the
-            reason it's a comment at all): deleted jobs aren't scoped by the
-            crew-member filter above — it reads per-person Completed history
-            via a dedicated endpoint (useCompletedJobsForPerson) that has no
-            deleted-jobs equivalent, so this list is meant to always show
-            regardless of that filter. Rendered unconditionally now. */}
-        {deleted.map((s) => (
+        {/* Testing feedback #49 — this block was briefly rendered
+            unconditionally (see git history), which fixed one bug
+            (deleted jobs vanishing in the default "All completed jobs"
+            view) by introducing exactly the one this item reported:
+            the deleted-jobs list has no per-person scoping at all — it's
+            every deleted job org-wide — so showing it unconditionally meant
+            the *same* unrelated deleted jobs appeared "at the top" no
+            matter which crew member was selected in the filter above,
+            looking like generic/junk jobs bleeding into that person's
+            history. Back to !personFilter: deleted jobs belong in the
+            unfiltered default view (matching this page's own subtitle),
+            not layered on top of a person-specific filter they were
+            never actually scoped to. */}
+        {!personFilter &&
+          deleted.map((s) => (
             <ArchiveRow
               key={s.job.id}
               name={s.job.name}

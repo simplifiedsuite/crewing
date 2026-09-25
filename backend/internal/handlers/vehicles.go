@@ -18,7 +18,11 @@ import (
 func (a *API) ListJobVehicles(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 	rows, err := a.DB.Query(r.Context(),
-		`SELECT core_vehicle_id, vehicle_name, registration FROM job_core_vehicles WHERE job_id = $1 ORDER BY vehicle_name`, jobID)
+		`SELECT jcv.core_vehicle_id, jcv.vehicle_name, jcv.registration, jcv.driver_person_id,
+		        p.first_name || ' ' || p.last_name
+		 FROM job_core_vehicles jcv
+		 LEFT JOIN people p ON p.id = jcv.driver_person_id
+		 WHERE jcv.job_id = $1 ORDER BY jcv.vehicle_name`, jobID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list job vehicles")
 		return
@@ -28,13 +32,43 @@ func (a *API) ListJobVehicles(w http.ResponseWriter, r *http.Request) {
 	vehicles := []models.JobVehicle{}
 	for rows.Next() {
 		var v models.JobVehicle
-		if err := rows.Scan(&v.CoreVehicleID, &v.Name, &v.Registration); err != nil {
+		if err := rows.Scan(&v.CoreVehicleID, &v.Name, &v.Registration, &v.DriverPersonID, &v.DriverName); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list job vehicles")
 			return
 		}
 		vehicles = append(vehicles, v)
 	}
 	writeJSON(w, http.StatusOK, vehicles)
+}
+
+// SetVehicleDriver — testing feedback #47. A nil PersonID clears the
+// driver (e.g. the picker's own "Not set" option), matching how every
+// other optional-picker field in this codebase clears rather than
+// requiring a separate unset endpoint.
+type setVehicleDriverRequest struct {
+	PersonID *string `json:"person_id"`
+}
+
+func (a *API) SetVehicleDriver(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	coreVehicleID := chi.URLParam(r, "vehicleId")
+	var req setVehicleDriverRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	tag, err := a.DB.Exec(r.Context(),
+		`UPDATE job_core_vehicles SET driver_person_id = $1 WHERE job_id = $2 AND core_vehicle_id = $3`,
+		req.PersonID, jobID, coreVehicleID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to set vehicle driver")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "that vehicle isn't assigned to this job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 type assignVehicleRequest struct {

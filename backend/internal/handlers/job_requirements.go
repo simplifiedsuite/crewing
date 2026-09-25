@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"ralto/internal/models"
 )
@@ -138,11 +139,35 @@ func (a *API) UpdateJobRequirement(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, jr)
 }
 
+// DeleteJobRequirement cascades to remove every booking under this role
+// (booking_shifts/booking_response_tokens cascade further from there —
+// see migrations/0037's own comment on why the latter didn't used to).
+// Testing feedback #65 — a role should be deletable once it's genuinely
+// empty, regardless of ordinary booking/offer history. The one deliberate
+// exception is a real financial record on one of its bookings —
+// timesheets (submitted/approved hours) or buyout_records (a persisted
+// copy of an actually-sent buyout, see migrations/0035's own comment) —
+// neither of which cascade, by design. That's surfaced here as a specific,
+// actionable message instead of the generic failure a bare FK violation
+// used to produce, so a scheduler hitting it actually understands why,
+// rather than re-reporting the same "can't delete" bug against a
+// genuinely different (and correct) cause.
 func (a *API) DeleteJobRequirement(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "reqId")
 	tag, err := a.DB.Exec(r.Context(), `DELETE FROM job_requirements WHERE id = $1 AND organisation_id = $2`, id, currentOrgID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to delete job requirement (it may still have bookings)")
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			switch pgErr.ConstraintName {
+			case "timesheets_booking_id_fkey":
+				writeError(w, http.StatusConflict, "this role has a submitted timesheet on one of its bookings, kept as a financial record — it can't be deleted")
+				return
+			case "buyout_records_booking_id_fkey":
+				writeError(w, http.StatusConflict, "this role has a sent buyout on record for one of its bookings, kept as a financial record — it can't be deleted")
+				return
+			}
+		}
+		writeError(w, http.StatusBadRequest, "failed to delete job requirement")
 		return
 	}
 	if tag.RowsAffected() == 0 {
