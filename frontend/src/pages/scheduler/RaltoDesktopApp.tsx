@@ -39,7 +39,7 @@ import {
   FileText,
 } from 'lucide-react'
 import { api, ApiError } from '../../lib/api'
-import { formatDate } from '../../lib/format'
+import { formatDate, formatTime } from '../../lib/format'
 import { useStaffAuth } from '../../context/StaffAuthContext'
 import {
   useAlerts,

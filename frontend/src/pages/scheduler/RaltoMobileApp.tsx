@@ -338,6 +338,10 @@ const ALERT_COPY: Record<OperationalAlert['type'], { title: string; icon: typeof
   unacknowledged_update: { title: 'Call-time change unacknowledged', icon: RefreshCw, tone: 'attention', actionLabel: 'Mark acknowledged' },
   no_show: { title: 'No-show reported', icon: AlertTriangle, tone: 'danger', actionLabel: 'Review' },
   auto_suggested_booking: { title: 'Auto-suggested booking to review', icon: Bell, tone: 'attention', actionLabel: 'Review' },
+  // Testing feedback #63 — same entry as the desktop scheduler's own
+  // ALERT_COPY (RaltoDesktopApp.tsx), which this file duplicates rather
+  // than shares.
+  freelancer_accepted: { title: 'Freelancer accepted — now pencilled', icon: CheckCircle2, tone: 'attention', actionLabel: 'Mark reviewed' },
 }
 
 const toneColor = {
