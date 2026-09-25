@@ -161,12 +161,45 @@ func (a *API) LinkCoreClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var c models.Client
-	err := scanClient(a.DB.QueryRow(r.Context(),
-		`SELECT `+clientSelectColumns+` FROM clients WHERE (core_client_id = $1 OR id = $1) AND organisation_id = $2`,
+	var existingID string
+	err := a.DB.QueryRow(r.Context(),
+		`SELECT id FROM clients WHERE (core_client_id = $1 OR id = $1) AND organisation_id = $2`,
 		req.CoreClientID, currentOrgID,
-	), &c)
+	).Scan(&existingID)
 	if err == nil {
+		// Already mirrored — this is the only point in the app where a
+		// local Client row gets fresh data from Core (docs §5a's pickers
+		// proxy straight to Core and never touch the mirror), so refresh
+		// the fields Core owns here rather than returning the old local
+		// row unchanged. Otherwise a colour (or name) set/changed in Core
+		// after the first link stays stale forever, since nothing else
+		// ever re-syncs it — confirmed live: Gravity Media's
+		// brand_color_hex sat NULL long after Core had #ed7138 set,
+		// because Core's colour was added after this row's original link
+		// and no later Job creation for that client had happened yet to
+		// pass back through here.
+		//
+		// COALESCE, not a blind overwrite: useFoundJob's caller (the
+		// "shared Job already found by order number" flow) only has
+		// job.client_name from Core's Job payload, not the Client's own
+		// colour/website, so it calls this with those fields unset. A
+		// plain overwrite would NULL OUT a real colour on every such
+		// call — the same bug being fixed here, via a different path.
+		var c models.Client
+		err = scanClient(a.DB.QueryRow(r.Context(),
+			`UPDATE clients SET
+			        name = COALESCE(NULLIF($1, ''), name),
+			        brand_color_hex = COALESCE($2, brand_color_hex),
+			        website = COALESCE($3, website),
+			        updated_at = now()
+			 WHERE id = $4
+			 RETURNING `+clientSelectColumns,
+			req.Name, req.BrandColorHex, req.Website, existingID,
+		), &c)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to refresh local client mirror")
+			return
+		}
 		writeJSON(w, http.StatusOK, c)
 		return
 	}
@@ -175,6 +208,7 @@ func (a *API) LinkCoreClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var c models.Client
 	err = scanClient(a.DB.QueryRow(r.Context(),
 		`INSERT INTO clients (name, brand_color_hex, website, core_client_id, organisation_id)
 		 VALUES ($1, $2, $3, $4, $5)
